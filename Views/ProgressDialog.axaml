@@ -1,0 +1,51 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="NNImage.Views.ProgressDialog"
+        Title="Training Progress"
+        Width="500" Height="200"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#1E1E1E">
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Name="TitleText" 
+                   Grid.Row="0"
+                   Text="Processing..." 
+                   FontSize="16" 
+                   FontWeight="Bold"
+                   Foreground="#CCCCCC"
+                   Margin="0,0,0,10"/>
+
+        <ProgressBar Name="ProgressBar" 
+                     Grid.Row="1"
+                     Height="20" 
+                     Minimum="0" 
+                     Maximum="100"
+                     Margin="0,0,0,10"/>
+
+        <ScrollViewer Grid.Row="2" 
+                      VerticalScrollBarVisibility="Auto"
+                      Margin="0,0,0,10">
+            <TextBlock Name="LogText" 
+                       Text="" 
+                       FontSize="11"
+                       FontFamily="Consolas,Courier New,monospace"
+                       Foreground="#9B9B9B"
+                       TextWrapping="Wrap"/>
+        </ScrollViewer>
+
+        <TextBlock Name="StatusText" 
+                   Grid.Row="3"
+                   Text="Starting..." 
+                   FontSize="12"
+                   Foreground="#6A9955"
+                   TextAlignment="Center"/>
+    </Grid>
+</Window>
