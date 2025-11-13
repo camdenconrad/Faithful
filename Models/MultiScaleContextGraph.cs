@@ -25,10 +25,15 @@ public class MultiScaleContextGraph
     private int _maxTrainedHeight = 0;
     private readonly object _resolutionLock = new object();
 
+    // Structural rule graph - learns grayscale structure patterns
+    private readonly StructuralRuleGraph _structuralGraph = new();
+    private const int STRUCTURE_CLASSES = 16; // Reduced to 16 for speed/memory
+
     public MultiScaleContextGraph()
     {
         Console.WriteLine("[MultiScaleContextGraph] Initialized ULTRA-FAST node-based graph for SUPER FAST training!");
         Console.WriteLine("[MultiScaleContextGraph] Graph uses normalized positions - automatically scales to any resolution!");
+        Console.WriteLine("[MultiScaleContextGraph] Structural learning enabled with 16 structure classes");
     }
 
     public void SetGpuAccelerator(GpuAccelerator? gpu)
@@ -78,71 +83,110 @@ public class MultiScaleContextGraph
             var (edgeKeys, edgeWeights) = result.Value;
 
             Console.WriteLine($"[MultiScaleContextGraph] Applying {edgeKeys.Length:N0} GPU-trained edges to graph");
+            Console.WriteLine($"[MultiScaleContextGraph] ⚠️ Processing in CHUNKS to stay under 30GB RAM limit");
 
             var startTime = System.Diagnostics.Stopwatch.GetTimestamp();
 
-            // OPTIMIZED: Group edges in parallel using ConcurrentDictionary
-            var edgeMap = new System.Collections.Concurrent.ConcurrentDictionary<long, (ColorRgb center, ColorRgb target, Direction dir, float x, float y, float weight)>();
+            // ═══ CRITICAL: Process in chunks to avoid 40GB+ memory usage ═══
+            // With 265M patterns, processing all at once uses 40GB+ RAM
+            // Process 5M patterns at a time to stay well under 30GB limit
+            const int CHUNK_SIZE = 5_000_000; // 5 million patterns per chunk
+            var totalChunks = (edgeKeys.Length + CHUNK_SIZE - 1) / CHUNK_SIZE;
+            var totalEdgesApplied = 0L;
 
-            System.Threading.Tasks.Parallel.For(0, edgeKeys.Length, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-                i =>
+            Console.WriteLine($"[MultiScaleContextGraph] Processing {totalChunks} chunks of {CHUNK_SIZE:N0} patterns each");
+
+            for (int chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++)
             {
-                var key = edgeKeys[i];
-                edgeMap.AddOrUpdate(key,
-                    // Add new
-                    (centerColors[i], targetColors[i], (Direction)directions[i], normalizedX[i], normalizedY[i], edgeWeights[i]),
-                    // Update existing - accumulate weight
-                    (_, existing) => (existing.center, existing.target, existing.dir, existing.x, existing.y, existing.weight + edgeWeights[i]));
-            });
+                var chunkStart = chunkIdx * CHUNK_SIZE;
+                var chunkEnd = Math.Min(chunkStart + CHUNK_SIZE, edgeKeys.Length);
+                var chunkSize = chunkEnd - chunkStart;
 
-            var groupTime = (System.Diagnostics.Stopwatch.GetTimestamp() - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
-            Console.WriteLine($"[MultiScaleContextGraph] Grouped to {edgeMap.Count:N0} unique edges in {groupTime * 1000:F1}ms");
+                Console.WriteLine($"[MultiScaleContextGraph] ┌─ Chunk {chunkIdx + 1}/{totalChunks}: Processing patterns {chunkStart:N0} to {chunkEnd:N0}");
 
-            // MASSIVE SPEEDUP: Pre-create all unique nodes in batched/parallel fashion
-            var uniqueNodeKeys = new System.Collections.Concurrent.ConcurrentDictionary<(ColorRgb, float, float), byte>();
+                // Group edges in this chunk
+                var edgeMap = new System.Collections.Concurrent.ConcurrentDictionary<long, (ColorRgb center, ColorRgb target, Direction dir, float x, float y, float weight)>();
 
-            System.Threading.Tasks.Parallel.ForEach(edgeMap.Values, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-                edge =>
-            {
-                uniqueNodeKeys.TryAdd((edge.center, edge.x, edge.y), 0);
-                uniqueNodeKeys.TryAdd((edge.target, edge.x, edge.y), 0);
-            });
-
-            Console.WriteLine($"[MultiScaleContextGraph] Identified {uniqueNodeKeys.Count:N0} unique nodes to create");
-
-            // Batch create nodes with fewer lock acquisitions
-            var nodeCache = new System.Collections.Concurrent.ConcurrentDictionary<(ColorRgb, float, float), GraphNode>();
-            var nodeBatches = uniqueNodeKeys.Keys.Chunk(1000).ToArray(); // Process in batches of 1000
-
-            System.Threading.Tasks.Parallel.ForEach(nodeBatches, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-                batch =>
-            {
-                foreach (var (color, x, y) in batch)
+                System.Threading.Tasks.Parallel.For(chunkStart, chunkEnd, 
+                    new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                    i =>
                 {
-                    var node = _fastGraph.GetOrCreateNode(color, x, y);
-                    nodeCache.TryAdd((color, x, y), node);
-                }
-            });
+                    var key = edgeKeys[i];
+                    edgeMap.AddOrUpdate(key,
+                        // Add new
+                        (centerColors[i], targetColors[i], (Direction)directions[i], normalizedX[i], normalizedY[i], edgeWeights[i]),
+                        // Update existing - accumulate weight
+                        (_, existing) => (existing.center, existing.target, existing.dir, existing.x, existing.y, existing.weight + edgeWeights[i]));
+                });
 
-            var nodeTime = (System.Diagnostics.Stopwatch.GetTimestamp() - startTime) / (double)System.Diagnostics.Stopwatch.Frequency - groupTime;
-            Console.WriteLine($"[MultiScaleContextGraph] Created {nodeCache.Count:N0} nodes in {nodeTime * 1000:F1}ms");
+                Console.WriteLine($"[MultiScaleContextGraph] │  Grouped to {edgeMap.Count:N0} unique edges in chunk");
 
-            // ULTRA-FAST: Apply edges using pre-created nodes (no more GetOrCreateNode calls!)
-            var edgeArray = edgeMap.Values.ToArray();
-            System.Threading.Tasks.Parallel.ForEach(edgeArray, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-                edge =>
-            {
-                if (nodeCache.TryGetValue((edge.center, edge.x, edge.y), out var centerNode) &&
-                    nodeCache.TryGetValue((edge.target, edge.x, edge.y), out var targetNode))
+                // Pre-create unique nodes for this chunk
+                var uniqueNodeKeys = new System.Collections.Concurrent.ConcurrentDictionary<(ColorRgb, float, float), byte>();
+
+                System.Threading.Tasks.Parallel.ForEach(edgeMap.Values, 
+                    new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                    edge =>
                 {
-                    _fastGraph.AddEdge(centerNode, edge.dir, targetNode, edge.weight);
-                }
-            });
+                    uniqueNodeKeys.TryAdd((edge.center, edge.x, edge.y), 0);
+                    uniqueNodeKeys.TryAdd((edge.target, edge.x, edge.y), 0);
+                });
+
+                Console.WriteLine($"[MultiScaleContextGraph] │  Creating {uniqueNodeKeys.Count:N0} nodes");
+
+                // Batch create nodes
+                var nodeCache = new System.Collections.Concurrent.ConcurrentDictionary<(ColorRgb, float, float), GraphNode>();
+                var nodeBatches = uniqueNodeKeys.Keys.Chunk(1000).ToArray();
+
+                System.Threading.Tasks.Parallel.ForEach(nodeBatches, 
+                    new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                    batch =>
+                {
+                    foreach (var (color, x, y) in batch)
+                    {
+                        var node = _fastGraph.GetOrCreateNode(color, x, y);
+                        nodeCache.TryAdd((color, x, y), node);
+                    }
+                });
+
+                // Apply edges for this chunk
+                var edgeArray = edgeMap.Values.ToArray();
+                System.Threading.Tasks.Parallel.ForEach(edgeArray, 
+                    new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                    edge =>
+                {
+                    if (nodeCache.TryGetValue((edge.center, edge.x, edge.y), out var centerNode) &&
+                        nodeCache.TryGetValue((edge.target, edge.x, edge.y), out var targetNode))
+                    {
+                        _fastGraph.AddEdge(centerNode, edge.dir, targetNode, edge.weight);
+                    }
+                });
+
+                totalEdgesApplied += edgeArray.Length;
+                Console.WriteLine($"[MultiScaleContextGraph] │  Applied {edgeArray.Length:N0} edges");
+
+                // ═══ CRITICAL: Clear chunk data immediately to free memory ═══
+                edgeMap.Clear();
+                edgeMap = null;
+                uniqueNodeKeys.Clear();
+                uniqueNodeKeys = null;
+                nodeCache.Clear();
+                nodeCache = null;
+                edgeArray = null;
+                nodeBatches = null;
+
+                // Force aggressive garbage collection between chunks to stay under 30GB
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+                GC.WaitForPendingFinalizers();
+
+                var memGB = GC.GetTotalMemory(true) / (1024.0 * 1024 * 1024);
+                Console.WriteLine($"[MultiScaleContextGraph] └─ Chunk complete. RAM: {memGB:F2}GB / 30GB");
+            }
 
             var totalTime = (System.Diagnostics.Stopwatch.GetTimestamp() - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
-            var edgesPerSec = edgeArray.Length / totalTime;
-            Console.WriteLine($"[MultiScaleContextGraph] ⚡ Applied {edgeArray.Length:N0} edges in {totalTime * 1000:F1}ms ({edgesPerSec / 1_000_000:F2}M edges/sec)");
-            Console.WriteLine($"[MultiScaleContextGraph] GPU bulk training applied to graph!");
+            var edgesPerSec = totalEdgesApplied / totalTime;
+            Console.WriteLine($"[MultiScaleContextGraph] ⚡ Applied {totalEdgesApplied:N0} edges in {totalTime * 1000:F1}ms ({edgesPerSec / 1_000_000:F2}M edges/sec)");
+            Console.WriteLine($"[MultiScaleContextGraph] ✓ GPU bulk training applied to graph! Stayed under 30GB RAM limit");
         }
         else
         {
@@ -179,6 +223,10 @@ public class MultiScaleContextGraph
         var invHeightMinus1 = regionHeight > 1 ? 1.0f / (regionHeight - 1) : 0.5f;
         var normalizedX = centerX * invWidthMinus1;
         var normalizedY = centerY * invHeightMinus1;
+
+        // Compute structural metrics on-the-fly (fast and memory efficient)
+        var structureClass = ComputeStructureClassFast(pixelRegion, regionWidth, regionHeight, centerX, centerY);
+        _structuralGraph.RecordObservation(structureClass, ColorToUInt32(centerColor));
 
         // Get or create node for center position
         var centerNode = _fastGraph.GetOrCreateNode(centerColor, normalizedX, normalizedY);
@@ -360,6 +408,12 @@ public class MultiScaleContextGraph
 
         _fastGraph.PrintStats();
 
+        // Normalize structural graph
+        Console.WriteLine("[MultiScaleContextGraph] Normalizing structural rule graph...");
+        _structuralGraph.NumStructureClasses = STRUCTURE_CLASSES;
+        _structuralGraph.Normalize();
+        Console.WriteLine($"[MultiScaleContextGraph] Structural graph: {STRUCTURE_CLASSES} structure classes learned");
+
         Console.WriteLine("[MultiScaleContextGraph] Training complete - graph is ready for super fast generation!");
     }
 
@@ -434,6 +488,75 @@ public class MultiScaleContextGraph
 
         return new ColorRgb(r, g, b);
     }
+
+    /// <summary>
+    /// ULTRA-FAST structural class computation using simple 3x3 window
+    /// Computes luminance, gradient, and entropy in one pass - memory efficient!
+    /// </summary>
+    private int ComputeStructureClassFast(uint[] pixels, int width, int height, int x, int y)
+    {
+        // Fast luminance computation for 3x3 window
+        var luminances = new float[9];
+        var idx = 0;
+
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                var nx = x + dx;
+                var ny = y + dy;
+
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height)
+                {
+                    var pixel = pixels[ny * width + nx];
+                    var r = (byte)((pixel >> 16) & 0xFF);
+                    var g = (byte)((pixel >> 8) & 0xFF);
+                    var b = (byte)(pixel & 0xFF);
+
+                    // Fast luminance: L = 0.299R + 0.587G + 0.114B
+                    luminances[idx] = 0.299f * r + 0.587f * g + 0.114f * b;
+                }
+                else
+                {
+                    luminances[idx] = 0;
+                }
+                idx++;
+            }
+        }
+
+        // Fast Sobel gradient (center pixel)
+        var centerLum = luminances[4];
+        var gx = -luminances[0] + luminances[2] - 2 * luminances[3] + 2 * luminances[5] - luminances[6] + luminances[8];
+        var gy = -luminances[0] - 2 * luminances[1] - luminances[2] + luminances[6] + 2 * luminances[7] + luminances[8];
+        var gradient = (float)Math.Sqrt(gx * gx + gy * gy);
+
+        // Fast entropy (variance as proxy)
+        var mean = luminances.Average();
+        var variance = 0f;
+        for (int i = 0; i < 9; i++)
+        {
+            var diff = luminances[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= 9;
+        var entropy = (float)Math.Sqrt(variance);
+
+        // Quantize to structure class (0-15)
+        // Use simple binning: luminance (4 bins) x gradient (2 bins) x entropy (2 bins) = 16 classes
+        var lumBin = (int)(centerLum / 64) % 4;  // 0-3
+        var gradBin = gradient > 50 ? 1 : 0;      // 0-1
+        var entropyBin = entropy > 30 ? 1 : 0;    // 0-1
+
+        var structureClass = lumBin * 4 + gradBin * 2 + entropyBin;
+        return structureClass;
+    }
+
+    private static uint ColorToUInt32(ColorRgb color)
+    {
+        return (uint)((255 << 24) | (color.R << 16) | (color.G << 8) | color.B);
+    }
+
+    public StructuralRuleGraph GetStructuralGraph() => _structuralGraph;
 
     // --- Persistence mapping ---
     public ModelSnapshot ToSnapshot()

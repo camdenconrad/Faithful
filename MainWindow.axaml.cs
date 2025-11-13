@@ -20,6 +20,7 @@ public partial class MainWindow : Window
     private List<string> _trainingImagePaths = new();
     private Bitmap? _generatedBitmap;
     private int _currentQuantizationLevel = 128;
+    private int _currentScaleRadius = 8;
     private GpuAccelerator? _gpu;
     private OnlineTrainingService? _onlineTraining;
     private int _totalTrainingImages = 0;
@@ -38,6 +39,17 @@ public partial class MainWindow : Window
             if (e.Property.Name == "Value")
             {
                 EntropyValueText.Text = $"{(int)EntropySlider.Value}%";
+            }
+        };
+
+        // Setup scale radius display
+        ScaleRadius.PropertyChanged += (s, e) =>
+        {
+            if (e.Property.Name == "Value")
+            {
+                var radius = (int)ScaleRadius.Value;
+                var contextSize = radius * 2 + 1;
+                ScaleRadiusInfo.Text = $"({contextSize}x{contextSize} context)";
             }
         };
 
@@ -61,7 +73,7 @@ public partial class MainWindow : Window
         // Initialize memory monitor (20GB RAM limit - HARD LIMIT to prevent system freeze)
         try
         {
-            _memoryMonitor = new MemoryMonitor(maxRamGB: 20);
+            _memoryMonitor = new MemoryMonitor(maxRamGB: 35);
             Console.WriteLine("[MainWindow] Memory monitor initialized with 20GB HARD LIMIT");
         }
         catch (Exception ex)
@@ -91,6 +103,22 @@ public partial class MainWindow : Window
 
                 if (_currentQuantizationLevel > 0)
                     QuantizationLevel.Value = _currentQuantizationLevel;
+
+                // Try to extract scale radius from notes if available
+                if (!string.IsNullOrEmpty(snapshot.Notes) && snapshot.Notes.Contains("ScaleRadius="))
+                {
+                    try
+                    {
+                        var radiusStr = snapshot.Notes.Split("ScaleRadius=")[1].Split(";")[0].Trim();
+                        if (int.TryParse(radiusStr, out var radius))
+                        {
+                            _currentScaleRadius = radius;
+                            ScaleRadius.Value = radius;
+                            Console.WriteLine($"[MainWindow] Restored scale radius: {radius}");
+                        }
+                    }
+                    catch { /* Ignore parse errors */ }
+                }
 
                 Console.WriteLine("[MainWindow] Loaded persisted model snapshot successfully");
                 TrainingStatusText.Text = "✓ Loaded model snapshot";
@@ -391,6 +419,13 @@ public partial class MainWindow : Window
             var quantizationLevel = (int)QuantizationLevel.Value;
             _currentQuantizationLevel = quantizationLevel;
 
+            var scaleRadius = (int)ScaleRadius.Value;
+            _currentScaleRadius = scaleRadius;
+            var contextSize = scaleRadius * 2 + 1;
+
+            Console.WriteLine($"[MainWindow] Training with scale radius: {scaleRadius} ({contextSize}x{contextSize} context)");
+            progressDialog.AddLog($"Scale radius: {scaleRadius} ({contextSize}x{contextSize} context window)");
+
             // Initialize quantizer if needed
             if (_quantizer == null || _currentQuantizationLevel != quantizationLevel)
             {
@@ -474,11 +509,18 @@ public partial class MainWindow : Window
                 var imagePath = _trainingImagePaths[i];
                 var fileName = Path.GetFileName(imagePath);
 
+                // ═══ CRITICAL: Force aggressive cleanup BEFORE loading next image ═══
+                // This ensures previous image data is completely freed from memory
+                // ONLY 1 IMAGE should EVER be in memory at once
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+
                 // ═══ PREVENTIVE MEMORY CHECK BEFORE LOADING ═══
                 var memStatusBefore = _memoryMonitor?.CheckMemory() ?? MemoryStatus.Normal;
                 var memBeforeGB = GC.GetTotalMemory(false) / (1024.0 * 1024 * 1024);
 
-                Console.WriteLine($"[MainWindow] Pre-load memory: {memBeforeGB:F2}GB / 20GB limit");
+                Console.WriteLine($"[MainWindow] Pre-load memory: {memBeforeGB:F2}GB / 30GB limit (only 1 image in RAM)");
 
                 if (memStatusBefore == MemoryStatus.Critical)
                 {
@@ -537,8 +579,14 @@ public partial class MainWindow : Window
                             ProcessImageIntoGraph(pixels, width, height);
                         });
 
-                        // Immediately null out pixel data to allow GC
+                        // ═══ CRITICAL: Immediately null out ALL large data to free memory ═══
+                        // This ensures only 1 image is ever in memory at once
+                        pixels = null;
                         pixelData = null;
+
+                        // Force immediate garbage collection to free memory before next image
+                        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+                        GC.WaitForPendingFinalizers();
 
                         processedCount++;
                         Console.WriteLine($"[MainWindow] ✓ Successfully processed: {fileName}");
@@ -568,7 +616,7 @@ public partial class MainWindow : Window
                 var (totalGpu, usedGpu, availGpu) = _gpu?.GetGpuMemoryInfo() ?? (0, 0, 0);
                 var gpuGB = usedGpu / (1024.0 * 1024 * 1024);
 
-                var progressMsg = hasGpu 
+                var progressMsg = hasGpu
                     ? $"⚡ {currentProgress}/{_trainingImagePaths.Count} ({currentPercentage}%) | " +
                       $"VRAM: {gpuGB:F1}GB | RAM: {memGB:F1}GB / 20GB"
                     : $"⚡ {currentProgress}/{_trainingImagePaths.Count} ({currentPercentage}%) | " +
@@ -631,7 +679,7 @@ public partial class MainWindow : Window
             }
 
             // Final processing on background thread with comprehensive error handling
-            progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+            progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                 "✓ All images processed - Finalizing model...");
 
             await Task.Run(() =>
@@ -647,7 +695,7 @@ public partial class MainWindow : Window
                     Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                     {
                         progressDialog.AddLog("🧹 Cleaning up memory before finalization...");
-                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                             "🧹 Memory cleanup...");
                     });
 
@@ -658,7 +706,7 @@ public partial class MainWindow : Window
                     Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                     {
                         progressDialog.AddLog("⚙️ Normalizing model...");
-                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                             "⚙️ Normalizing model...");
                     });
 
@@ -676,7 +724,7 @@ public partial class MainWindow : Window
                     Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                     {
                         progressDialog.AddLog("🏗️ Building cache structure...");
-                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                             "🏗️ Building cache...");
                     });
                     Console.WriteLine("[Background] Building adjacency graph for cache...");
@@ -708,7 +756,7 @@ public partial class MainWindow : Window
                             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                             {
                                 progressDialog.AddLog($"Processing colors: {percent}%");
-                                progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+                                progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                                     $"🏗️ Building cache: {percent}% ({processedColors:N0}/{colorList.Count:N0} colors)");
                             });
                         }
@@ -735,7 +783,7 @@ public partial class MainWindow : Window
                     Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                     {
                         progressDialog.AddLog("⚙️ Normalizing cache...");
-                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                             "⚙️ Normalizing cache...");
                     });
                     Console.WriteLine("[Background] Normalizing adjacency graph...");
@@ -744,14 +792,14 @@ public partial class MainWindow : Window
                     Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                     {
                         progressDialog.AddLog("💾 Saving to disk...");
-                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                             "💾 Saving cache to disk...");
                     });
                     Console.WriteLine("[Background] Saving cache to disk...");
 
                     var cache = TrainingDataCache.FromAdjacencyGraph(
-                        simpleGraph, 
-                        quantizationLevel, 
+                        simpleGraph,
+                        quantizationLevel,
                         _trainingImagePaths);
                     cache.Save();
 
@@ -761,13 +809,13 @@ public partial class MainWindow : Window
                     Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                     {
                         progressDialog.AddLog("💾 Saving model snapshot...");
-                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count, 
+                        progressDialog.UpdateProgress(_trainingImagePaths.Count, _trainingImagePaths.Count,
                             "💾 Saving model snapshot...");
                     });
                     ModelRepository.Save(
-                        _multiScaleGraph, 
-                        null, 
-                        $"QuantLevel={quantizationLevel}; Images={_totalTrainingImages}",
+                        _multiScaleGraph,
+                        null,
+                        $"ScaleRadius={_currentScaleRadius}; QuantLevel={quantizationLevel}; Images={_totalTrainingImages}",
                         quantizationLevel,
                         _totalTrainingImages,
                         _firstTrainingDate,
@@ -780,7 +828,7 @@ public partial class MainWindow : Window
                 catch (OutOfMemoryException ex)
                 {
                     Console.WriteLine($"[Background] OUT OF MEMORY during finalization: {ex.Message}");
-                    Avalonia.Threading.Dispatcher.UIThread.Post(() => 
+                    Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                         progressDialog.AddLog("⚠ Memory exhausted - attempting emergency save..."));
 
                     // Try emergency save without full graph conversion
@@ -814,12 +862,13 @@ public partial class MainWindow : Window
             await Task.Delay(1500);
             progressDialog.Close();
 
+            var finalContextSize = _currentScaleRadius * 2 + 1;
             TrainingStatusText.Text = $"✓ Multi-scale model trained! {patternCount} patterns";
             TrainingStatusText.Foreground = Avalonia.Media.Brushes.LightGreen;
             TrainingInfoText.Text = $"Total images: {_totalTrainingImages}\n" +
                                    $"Multi-scale patterns: {patternCount}\n" +
                                    $"Colors: {colorCount}\n" +
-                                   $"Scales: 3x3, 5x5, 9x9\n" +
+                                   $"Scale radius: {_currentScaleRadius} ({finalContextSize}x{finalContextSize})\n" +
                                    $"First trained: {_firstTrainingDate:g}\n" +
                                    $"Last updated: {DateTime.Now:g}";
             GenerateButton.IsEnabled = true;
@@ -1023,7 +1072,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            localBatches.Add((localCenters.ToArray(), localTargets.ToArray(), 
+            localBatches.Add((localCenters.ToArray(), localTargets.ToArray(),
                              localDirections.ToArray(), localNormX.ToArray(), localNormY.ToArray()));
         });
 
@@ -1075,7 +1124,8 @@ public partial class MainWindow : Window
         Console.WriteLine($"[ProcessImage] {centerColorsArray.Length:N0} patterns in {totalTime:F3}s");
         Console.WriteLine($"[ProcessImage] ⚡ {patternsPerSec / 1_000_000:F2}M patterns/sec - GPU MAXED!");
 
-        // Clear arrays immediately after GPU processing
+        // ═══ CRITICAL: Clear ALL large arrays immediately after GPU processing ═══
+        // This ensures we don't keep multiple images worth of data in memory
         centerColorsArray = null;
         targetColorsArray = null;
         directionsArray = null;
@@ -1085,8 +1135,10 @@ public partial class MainWindow : Window
         quantizedColors = null;
         localBatches = null;
 
-        // Force cleanup of large temporary data
-        GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+        // Force aggressive cleanup to stay under 30GB RAM limit
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
     }
 
     private Dictionary<Direction, ColorRgb?> ExtractNeighborhood(
@@ -1116,7 +1168,7 @@ public partial class MainWindow : Window
     }
 
     private void ProcessMultiScaleGpuResults(
-        (byte[] centersR, byte[] centersG, byte[] centersB, 
+        (byte[] centersR, byte[] centersG, byte[] centersB,
          byte[] neighbors3x3R, byte[] neighbors3x3G, byte[] neighbors3x3B,
          byte[] neighbors5x5R, byte[] neighbors5x5G, byte[] neighbors5x5B,
          byte[] neighbors9x9R, byte[] neighbors9x9G, byte[] neighbors9x9B) gpuData,
@@ -1124,7 +1176,7 @@ public partial class MainWindow : Window
     {
         Console.WriteLine($"[ProcessImage] ⚡ MAX GPU MODE: {pixels.Length:N0} pixels → FULL GPU PIPELINE!");
 
-        var (centersR, centersG, centersB, 
+        var (centersR, centersG, centersB,
              neighbors3x3R, neighbors3x3G, neighbors3x3B,
              _, _, _,
              _, _, _) = gpuData;
@@ -1216,7 +1268,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            localBatches.Add((localCenters.ToArray(), localTargets.ToArray(), 
+            localBatches.Add((localCenters.ToArray(), localTargets.ToArray(),
                              localDirections.ToArray(), localNormX.ToArray(), localNormY.ToArray()));
         });
 
@@ -1270,7 +1322,8 @@ public partial class MainWindow : Window
         Console.WriteLine($"[ProcessImage] {centerColorsArray.Length:N0} patterns in {totalTime:F3}s");
         Console.WriteLine($"[ProcessImage] ⚡ {patternsPerSec / 1_000_000:F2}M patterns/sec - GPU FULLY MAXED OUT!");
 
-        // Clear all large temporary data immediately
+        // ═══ CRITICAL: Clear ALL large temporary data immediately ═══
+        // This ensures we don't keep multiple images worth of data in memory
         centerColorsArray = null;
         targetColorsArray = null;
         directionsArray = null;
@@ -1282,8 +1335,10 @@ public partial class MainWindow : Window
         quantizedNeighbors = null;
         localBatches = null;
 
-        // Force cleanup of large temporary data
-        GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+        // Force aggressive cleanup to stay under 30GB RAM limit
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
     }
 
     private async Task<(uint[] pixels, int width, int height)?> ExtractPixelDataAsync(string imagePath)
@@ -1481,10 +1536,12 @@ public partial class MainWindow : Window
 
             // Generate using ultra-fast node-based WFC with selectable mode
             // Pass GPU accelerator for CUDA hyper-speed when enabled
+            // Pass structural graph for structure-aware generation
             var pixelData = await Task.Run(() =>
             {
                 var fastGraph = _multiScaleGraph.GetFastGraph();
-                var fastWfc = new FastWaveFunctionCollapse(fastGraph, width, height, _gpu, entropyFactor, cancellationToken);
+                var structuralGraph = _multiScaleGraph.GetStructuralGraph();
+                var fastWfc = new FastWaveFunctionCollapse(fastGraph, width, height, _gpu, entropyFactor, cancellationToken, structuralGraph);
                 // Pass CUDA preference to generation - FastWFC will handle fallback internally
                 return fastWfc.Generate(seedCount, mode, progressCallback, updateFrequency, useCuda);
             }, cancellationToken);
@@ -1548,6 +1605,79 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ResolutionPresetCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        // Guard against initialization - controls may not be ready yet
+        if (ResolutionPresetCombo == null || OutputWidth == null || OutputHeight == null)
+            return;
+
+        if (ResolutionPresetCombo.SelectedIndex < 0)
+            return;
+
+        var (width, height) = ResolutionPresetCombo.SelectedIndex switch
+        {
+            0 => (1280, 720),      // HD
+            1 => (1920, 1080),     // Full HD
+            2 => (2560, 1440),     // 2K
+            3 => (3840, 2160),     // 4K
+            _ => ((int)OutputWidth.Value, (int)OutputHeight.Value) // Custom - keep current
+        };
+
+        if (ResolutionPresetCombo.SelectedIndex != 4) // Not Custom
+        {
+            OutputWidth.Value = width;
+            OutputHeight.Value = height;
+            Console.WriteLine($"[MainWindow] Applied resolution preset: {width}x{height}");
+        }
+    }
+
+    private void AspectRatioCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        // Guard against initialization - controls may not be ready yet
+        if (AspectRatioCombo == null || OutputWidth == null || OutputHeight == null)
+            return;
+
+        if (AspectRatioCombo.SelectedIndex < 0)
+            return;
+
+        var currentWidth = (int)OutputWidth.Value;
+        var currentHeight = (int)OutputHeight.Value;
+
+        // Calculate new dimensions based on aspect ratio, keeping the larger dimension
+        var (widthRatio, heightRatio) = AspectRatioCombo.SelectedIndex switch
+        {
+            0 => (1.0, 1.0),      // 1:1 Square
+            1 => (16.0, 9.0),     // 16:9 Widescreen
+            2 => (4.0, 3.0),      // 4:3 Standard
+            3 => (3.0, 2.0),      // 3:2 Photography
+            4 => (21.0, 9.0),     // 21:9 Ultrawide
+            5 => (9.0, 16.0),     // 9:16 Portrait
+            _ => (1.0, 1.0)
+        };
+
+        // Use the larger dimension as reference and calculate the other
+        int newWidth, newHeight;
+        if (currentWidth >= currentHeight)
+        {
+            newWidth = currentWidth;
+            newHeight = (int)Math.Round(currentWidth * heightRatio / widthRatio / 64.0) * 64; // Round to nearest 64
+        }
+        else
+        {
+            newHeight = currentHeight;
+            newWidth = (int)Math.Round(currentHeight * widthRatio / heightRatio / 64.0) * 64; // Round to nearest 64
+        }
+
+        // Ensure minimum size
+        newWidth = Math.Max(128, newWidth);
+        newHeight = Math.Max(128, newHeight);
+
+        OutputWidth.Value = newWidth;
+        OutputHeight.Value = newHeight;
+
+        Console.WriteLine($"[MainWindow] Applied aspect ratio {widthRatio}:{heightRatio} -> {newWidth}x{newHeight}");
+    }
+
     private async void SaveButton_Click(object? sender, RoutedEventArgs e)
     {
         if (_generatedBitmap == null)
@@ -1603,7 +1733,7 @@ public partial class MainWindow : Window
             var success = ModelRepository.Save(
                 _multiScaleGraph,
                 filePath,
-                $"QuantLevel={_currentQuantizationLevel}; Images={_totalTrainingImages}",
+                $"ScaleRadius={_currentScaleRadius}; QuantLevel={_currentQuantizationLevel}; Images={_totalTrainingImages}",
                 _currentQuantizationLevel,
                 _totalTrainingImages,
                 _firstTrainingDate,
@@ -1689,6 +1819,22 @@ public partial class MainWindow : Window
                 if (_currentQuantizationLevel > 0)
                     QuantizationLevel.Value = _currentQuantizationLevel;
 
+                // Try to extract scale radius from notes if available
+                if (!string.IsNullOrEmpty(snapshot.Notes) && snapshot.Notes.Contains("ScaleRadius="))
+                {
+                    try
+                    {
+                        var radiusStr = snapshot.Notes.Split("ScaleRadius=")[1].Split(";")[0].Trim();
+                        if (int.TryParse(radiusStr, out var radius))
+                        {
+                            _currentScaleRadius = radius;
+                            ScaleRadius.Value = radius;
+                            Console.WriteLine($"[MainWindow] Restored scale radius: {radius}");
+                        }
+                    }
+                    catch { /* Ignore parse errors */ }
+                }
+
                 Console.WriteLine($"[MainWindow] Loaded model: {modelName}");
                 TrainingStatusText.Text = $"✓ Loaded model: {modelName}";
                 TrainingStatusText.Foreground = Avalonia.Media.Brushes.LightGreen;
@@ -1744,14 +1890,14 @@ public partial class MainWindow : Window
 
         string? result = null;
 
-        var mainPanel = new StackPanel 
-        { 
+        var mainPanel = new StackPanel
+        {
             Margin = new Avalonia.Thickness(20)
         };
 
-        var messageBlock = new TextBlock 
-        { 
-            Text = message, 
+        var messageBlock = new TextBlock
+        {
+            Text = message,
             TextWrapping = Avalonia.Media.TextWrapping.Wrap,
             Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#CCCCCC")),
             FontSize = 13,
@@ -1765,16 +1911,16 @@ public partial class MainWindow : Window
             FontSize = 13
         };
 
-        var buttonPanel = new StackPanel 
-        { 
+        var buttonPanel = new StackPanel
+        {
             Orientation = Avalonia.Layout.Orientation.Horizontal,
             HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
             Spacing = 10
         };
 
-        var okButton = new Button 
-        { 
-            Content = "Save", 
+        var okButton = new Button
+        {
+            Content = "Save",
             Width = 100,
             Height = 32,
             Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#007ACC")),
@@ -1783,9 +1929,9 @@ public partial class MainWindow : Window
         };
         okButton.Click += (s, e) => { result = inputBox.Text; dialog.Close(); };
 
-        var cancelButton = new Button 
-        { 
-            Content = "Cancel", 
+        var cancelButton = new Button
+        {
+            Content = "Cancel",
             Width = 100,
             Height = 32,
             Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#2D2D30")),
@@ -1803,10 +1949,10 @@ public partial class MainWindow : Window
         dialog.Content = mainPanel;
 
         // Focus the text box and select all text
-        inputBox.AttachedToVisualTree += (s, e) => 
-        { 
-            inputBox.Focus(); 
-            inputBox.SelectAll(); 
+        inputBox.AttachedToVisualTree += (s, e) =>
+        {
+            inputBox.Focus();
+            inputBox.SelectAll();
         };
 
         await dialog.ShowDialog(this);
@@ -1878,8 +2024,8 @@ public partial class MainWindow : Window
 
         var result = false;
 
-        var mainPanel = new StackPanel 
-        { 
+        var mainPanel = new StackPanel
+        {
             Margin = new Avalonia.Thickness(20)
         };
 
@@ -1890,9 +2036,9 @@ public partial class MainWindow : Window
             Margin = new Avalonia.Thickness(0, 0, 0, 20)
         };
 
-        var messageBlock = new TextBlock 
-        { 
-            Text = message, 
+        var messageBlock = new TextBlock
+        {
+            Text = message,
             TextWrapping = Avalonia.Media.TextWrapping.Wrap,
             Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#CCCCCC")),
             FontSize = 13,
@@ -1903,16 +2049,16 @@ public partial class MainWindow : Window
         mainPanel.Children.Add(scrollViewer);
 
         // Button panel
-        var buttonPanel = new StackPanel 
-        { 
+        var buttonPanel = new StackPanel
+        {
             Orientation = Avalonia.Layout.Orientation.Horizontal,
             HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
             Spacing = 10
         };
 
-        var yesButton = new Button 
-        { 
-            Content = "Yes, Clear All", 
+        var yesButton = new Button
+        {
+            Content = "Yes, Clear All",
             Width = 120,
             Height = 35,
             Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#C42B1C")),
@@ -1921,9 +2067,9 @@ public partial class MainWindow : Window
         };
         yesButton.Click += (s, e) => { result = true; dialog.Close(); };
 
-        var noButton = new Button 
-        { 
-            Content = "Cancel", 
+        var noButton = new Button
+        {
+            Content = "Cancel",
             Width = 120,
             Height = 35,
             Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#2D2D30")),

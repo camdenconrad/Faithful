@@ -2,10 +2,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="1900" d:DesignHeight="1300"
+        mc:Ignorable="d" d:DesignWidth="1900" d:DesignHeight="1100"
         x:Class="NNImage.MainWindow"
         Title="Neural Image Generator"
-        MinWidth="1200" MinHeight="700"
+        MinWidth="1900" MinHeight="1100"
         Background="#1E1E1E">
 
     <Window.Styles>
@@ -151,13 +151,13 @@
                         BorderBrush="#3F3F46" 
                         BorderThickness="1"
                         CornerRadius="4">
-                    <Viewbox Stretch="Uniform" 
+                    <Viewbox Stretch="Uniform"
                            StretchDirection="Both"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
                            Margin="10">
-                        <Image Name="GeneratedImage" 
-                             Width="512" 
+                        <Image Name="GeneratedImage"
+                             Width="512"
                              Height="512"/>
                     </Viewbox>
                 </Border>
@@ -221,11 +221,35 @@
                                          Classes="label"/>
                             </StackPanel>
 
+                            <TextBlock Classes="label" Text="Resolution Preset" Margin="0,0,0,3"/>
+                            <ComboBox Name="ResolutionPresetCombo"
+                                    SelectedIndex="3"
+                                    SelectionChanged="ResolutionPresetCombo_SelectionChanged"
+                                    Margin="0,0,0,8">
+                                <ComboBoxItem Content="🎬 HD (1280x720)"/>
+                                <ComboBoxItem Content="📺 Full HD (1920x1080)"/>
+                                <ComboBoxItem Content="🖥️ 2K (2560x1440)"/>
+                                <ComboBoxItem Content="✨ 4K (3840x2160)"/>
+                                <ComboBoxItem Content="🎨 Custom (Manual)"/>
+                            </ComboBox>
+
+                            <TextBlock Classes="label" Text="Aspect Ratio" Margin="0,0,0,3"/>
+                            <ComboBox Name="AspectRatioCombo"
+                                    SelectedIndex="0"
+                                    SelectionChanged="AspectRatioCombo_SelectionChanged"
+                                    Margin="0,0,0,8">
+                                <ComboBoxItem Content="📱 1:1 (Square)"/>
+                                <ComboBoxItem Content="🎬 16:9 (Widescreen)"/>
+                                <ComboBoxItem Content="📺 4:3 (Standard)"/>
+                                <ComboBoxItem Content="📷 3:2 (Photography)"/>
+                                <ComboBoxItem Content="🎥 21:9 (Ultrawide)"/>
+                                <ComboBoxItem Content="📄 9:16 (Portrait)"/>
+                            </ComboBox>
+
                             <TextBlock Classes="label" Text="Width" Margin="0,0,0,3"/>
                             <NumericUpDown Name="OutputWidth" 
                                          Value="512" 
                                          Minimum="128" 
-                                         Maximum="3840" 
                                          Increment="64"
                                          Margin="0,0,0,8"/>
 
@@ -233,7 +257,6 @@
                             <NumericUpDown Name="OutputHeight" 
                                          Value="512" 
                                          Minimum="128" 
-                                         Maximum="2160" 
                                          Increment="64"/>
                         </StackPanel>
                     </Border>
@@ -254,6 +277,21 @@
                                          Maximum="256" 
                                          Increment="16"
                                          Margin="0,0,0,8"/>
+
+                            <TextBlock Classes="label" Text="Scale Radius (Context Size)" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <NumericUpDown Name="ScaleRadius" 
+                                             Value="8" 
+                                             Minimum="1" 
+                                             Maximum="16" 
+                                             Increment="1"
+                                             Width="100"/>
+                                <TextBlock Name="ScaleRadiusInfo" 
+                                         Text="(17x17 context)" 
+                                         VerticalAlignment="Center" 
+                                         Margin="8,0,0,0"
+                                         Classes="label"/>
+                            </StackPanel>
 
                             <TextBlock Text="Local Training" 
                                      FontSize="11" 

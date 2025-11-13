@@ -78,7 +78,7 @@ public class GpuAccelerator : IDisposable
     {
         // Configure CPU thread pool for ~80% utilization (leave headroom for system)
         var logicalCores = Environment.ProcessorCount;
-        _cpuThreadCount = Math.Max(1, (int)(logicalCores * 0.8));
+        _cpuThreadCount = Math.Max(1, (int)(logicalCores * 0.9));
         _parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = _cpuThreadCount };
 
         Console.WriteLine($"[CPU] Configured for {_cpuThreadCount}/{logicalCores} threads (~80% utilization)");

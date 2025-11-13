@@ -14,13 +14,16 @@ namespace NNImage.Services;
 public class FastWaveFunctionCollapse
 {
     private readonly FastContextGraph _graph;
+    private readonly StructuralRuleGraph? _structuralGraph;
     private readonly GpuAccelerator? _gpu;
     private readonly int _width;
     private readonly int _height;
     private readonly Random _random = new();
     private readonly ColorRgb?[,] _collapsed;
+    private readonly int[,] _structureClasses; // Cache structure classes for generated pixels
     private readonly List<ColorRgb> _availableColors;
     private readonly double _entropyFactor; // 0.0 = deterministic (most probable), 1.0 = high randomness
+    private readonly double _structuralWeight = 0.2; // How much structural rules influence generation (0.0-1.0)
     private readonly System.Threading.CancellationToken _cancellationToken;
 
     public enum GenerationMode
@@ -36,23 +39,34 @@ public class FastWaveFunctionCollapse
 
     public delegate void ProgressCallback(uint[] pixels, int collapsedCount, int totalCells);
 
-    public FastWaveFunctionCollapse(FastContextGraph graph, int width, int height, GpuAccelerator? gpu = null, double entropyFactor = 0.0, System.Threading.CancellationToken cancellationToken = default)
+    public FastWaveFunctionCollapse(FastContextGraph graph, int width, int height, GpuAccelerator? gpu = null, double entropyFactor = 0.0, System.Threading.CancellationToken cancellationToken = default, StructuralRuleGraph? structuralGraph = null)
     {
         _graph = graph;
+        _structuralGraph = structuralGraph;
         _gpu = gpu;
         _width = width;
         _height = height;
         _collapsed = new ColorRgb?[height, width];
+        _structureClasses = new int[height, width];
         _availableColors = graph.GetAllColors();
         _entropyFactor = Math.Clamp(entropyFactor, 0.0, 1.0);
         _cancellationToken = cancellationToken;
+
+        // Initialize structure classes to -1 (unassigned)
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                _structureClasses[y, x] = -1;
+            }
+        }
 
         if (_availableColors.Count == 0)
         {
             throw new InvalidOperationException("Graph has no colors - train the model first!");
         }
 
-        Console.WriteLine($"[FastWFC] Initialized for {width}x{height} with {_availableColors.Count} colors, Entropy: {_entropyFactor:F2}, GPU: {(gpu?.IsAvailable == true ? "Available" : "N/A")}");
+        Console.WriteLine($"[FastWFC] Initialized for {width}x{height} with {_availableColors.Count} colors, Entropy: {_entropyFactor:F2}, Structural: {(_structuralGraph != null ? "Enabled" : "Disabled")}, GPU: {(gpu?.IsAvailable == true ? "Available" : "N/A")}");
     }
 
     /// <summary>
@@ -876,7 +890,7 @@ public class FastWaveFunctionCollapse
     }
 
     /// <summary>
-    /// Collapse a cell using weighted predictions from nearby nodes
+    /// Collapse a cell using weighted predictions from nearby nodes + structural rules
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CollapseCell(int x, int y)
@@ -920,6 +934,35 @@ public class FastWaveFunctionCollapse
                     }
                 }
             }
+        }
+
+        // Apply structural rules if available
+        if (_structuralGraph != null && colorWeights.Count > 0)
+        {
+            // Estimate structure class from neighbors' structure
+            var structureClass = EstimateStructureClass(x, y);
+            _structureClasses[y, x] = structureClass;
+
+            // Blend adjacency weights with structural probabilities
+            var adjustedWeights = new Dictionary<ColorRgb, double>();
+            foreach (var (color, adjacencyWeight) in colorWeights)
+            {
+                var structuralProb = _structuralGraph.GetColorProbability(structureClass, ColorToUInt32(color));
+
+                // Blend: (1-w) * adjacency + w * structural
+                // If no structural data for this color, use adjacency only
+                if (structuralProb > 0)
+                {
+                    var blendedWeight = (1.0 - _structuralWeight) * adjacencyWeight + _structuralWeight * structuralProb;
+                    adjustedWeights[color] = blendedWeight;
+                }
+                else
+                {
+                    adjustedWeights[color] = adjacencyWeight; // Fall back to adjacency only
+                }
+            }
+
+            colorWeights = adjustedWeights;
         }
 
         // Select color based on accumulated weights + entropy factor
@@ -1862,6 +1905,63 @@ public class FastWaveFunctionCollapse
         });
 
         return pixels;
+    }
+
+    /// <summary>
+    /// Estimate structure class from neighboring collapsed pixels
+    /// Uses simple averaging of neighbor structure classes
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int EstimateStructureClass(int x, int y)
+    {
+        var structureVotes = new int[16]; // 16 structure classes
+        var neighborCount = 0;
+
+        // Sample from collapsed neighbors
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                if (dx == 0 && dy == 0) continue;
+
+                var nx = x + dx;
+                var ny = y + dy;
+
+                if (nx >= 0 && nx < _width && ny >= 0 && ny < _height)
+                {
+                    var neighborClass = _structureClasses[ny, nx];
+                    if (neighborClass >= 0)
+                    {
+                        structureVotes[neighborClass]++;
+                        neighborCount++;
+                    }
+                }
+            }
+        }
+
+        // Return most common neighbor structure class, or default to mid-range
+        if (neighborCount > 0)
+        {
+            var maxVotes = 0;
+            var bestClass = 8; // Default to middle class
+            for (int i = 0; i < 16; i++)
+            {
+                if (structureVotes[i] > maxVotes)
+                {
+                    maxVotes = structureVotes[i];
+                    bestClass = i;
+                }
+            }
+            return bestClass;
+        }
+
+        return 8; // Default to middle structure class
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint ColorToUInt32(ColorRgb color)
+    {
+        return (uint)((255 << 24) | (color.R << 16) | (color.G << 8) | color.B);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
