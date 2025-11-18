@@ -28,6 +28,10 @@ public partial class MainWindow : Window
     private bool _loadedFromSnapshot = false;
     private System.Threading.CancellationTokenSource? _generationCancellation;
     private MemoryMonitor? _memoryMonitor;
+    private uint[]? _upscaleSourcePixels;
+    private int _upscaleSourceWidth;
+    private int _upscaleSourceHeight;
+    private Bitmap? _upscaledBitmap;
 
     public MainWindow()
     {
@@ -2085,6 +2089,191 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
 
         return result;
+    }
+
+    private async void LoadUpscaleImageButton_Click(object? sender, RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Select Image to Upscale",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("Image Files") 
+                { 
+                    Patterns = new[] { "*.png", "*.jpg", "*.jpeg", "*.bmp" } 
+                }
+            }
+        });
+
+        if (files.Count > 0)
+        {
+            var filePath = files[0].Path.LocalPath;
+            Console.WriteLine($"[Upscale] Loading image: {filePath}");
+
+            try
+            {
+                var pixelData = await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
+                {
+                    return await ExtractPixelDataAsync(filePath);
+                });
+
+                if (pixelData.HasValue)
+                {
+                    var (pixels, width, height) = pixelData.Value;
+                    _upscaleSourcePixels = pixels;
+                    _upscaleSourceWidth = width;
+                    _upscaleSourceHeight = height;
+
+                    // Display the source image
+                    var sourceBitmap = FastWaveFunctionCollapse.CreateBitmapFromPixels(pixels, width, height);
+                    GeneratedImage.Source = sourceBitmap;
+                    GeneratedImage.Width = width;
+                    GeneratedImage.Height = height;
+
+                    UpscaleImageButton.IsEnabled = true;
+                    UpscalingStatusText.Text = $"✓ Loaded {width}x{height} image\nReady to upscale";
+                    UpscalingStatusText.Foreground = Avalonia.Media.Brushes.LightGreen;
+
+                    Console.WriteLine($"[Upscale] Image loaded successfully: {width}x{height}");
+                }
+                else
+                {
+                    UpscalingStatusText.Text = "✗ Failed to load image";
+                    UpscalingStatusText.Foreground = Avalonia.Media.Brushes.OrangeRed;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Upscale] Error loading image: {ex.Message}");
+                UpscalingStatusText.Text = $"✗ Error: {ex.Message}";
+                UpscalingStatusText.Foreground = Avalonia.Media.Brushes.OrangeRed;
+            }
+        }
+    }
+
+    private async void UpscaleImageButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_upscaleSourcePixels == null)
+        {
+            UpscalingStatusText.Text = "⚠ Please load an image first";
+            UpscalingStatusText.Foreground = Avalonia.Media.Brushes.OrangeRed;
+            return;
+        }
+
+        var scaleFactor = UpscaleFactorCombo.SelectedIndex switch
+        {
+            0 => 2,
+            1 => 3,
+            2 => 4,
+            _ => 2
+        };
+
+        Console.WriteLine($"[Upscale] Starting {scaleFactor}x upscaling with repliKate...");
+
+        UpscaleImageButton.IsEnabled = false;
+        LoadUpscaleImageButton.IsEnabled = false;
+        SaveUpscaledButton.IsEnabled = false;
+
+        var progressDialog = new Views.ProgressDialog();
+        progressDialog.SetTitle("Upscaling with repliKate");
+        _ = progressDialog.ShowDialog(this);
+
+        try
+        {
+            progressDialog.AddLog($"Input: {_upscaleSourceWidth}x{_upscaleSourceHeight}");
+            progressDialog.AddLog($"Target: {_upscaleSourceWidth * scaleFactor}x{_upscaleSourceHeight * scaleFactor} ({scaleFactor}x)");
+            progressDialog.AddLog("Initializing HYBRID upscaler...");
+            progressDialog.AddLog("• NNImage: Spatial pattern graph");
+            progressDialog.AddLog("• repliKate: Sequence prediction tree");
+
+            // Create upscaler with access to trained NNImage graph and quantizer
+            // This leverages the existing trained model if available
+            var upscaler = new ImageUpscaler(_multiScaleGraph, _quantizer, _gpu, patchSize: 3);
+
+            // Train on the source image - both systems learn complementary patterns
+            progressDialog.AddLog("Training hybrid system on image...");
+            progressDialog.UpdateProgress(0, 3, "Training both AI systems...");
+
+            await Task.Run(() =>
+            {
+                upscaler.TrainOnImage(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight);
+            });
+
+            progressDialog.AddLog("✓ Training complete");
+            progressDialog.UpdateProgress(1, 3, "Upscaling image...");
+
+            // Perform upscaling
+            var (upscaledPixels, upscaledWidth, upscaledHeight) = await Task.Run(() =>
+            {
+                return upscaler.Upscale(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight, scaleFactor);
+            });
+
+            progressDialog.AddLog($"✓ Upscaled to {upscaledWidth}x{upscaledHeight}");
+            progressDialog.UpdateProgress(2, 3, "Creating final image...");
+
+            // Create and display the upscaled image
+            var upscaledBitmap = FastWaveFunctionCollapse.CreateBitmapFromPixels(upscaledPixels, upscaledWidth, upscaledHeight);
+            _upscaledBitmap = upscaledBitmap;
+
+            GeneratedImage.Source = upscaledBitmap;
+            GeneratedImage.Width = upscaledWidth;
+            GeneratedImage.Height = upscaledHeight;
+
+            progressDialog.Complete($"Hybrid upscaling complete!\n{_upscaleSourceWidth}x{_upscaleSourceHeight} → {upscaledWidth}x{upscaledHeight}\nNNImage + repliKate");
+            await Task.Delay(1500);
+            progressDialog.Close();
+
+            UpscalingStatusText.Text = $"✓ Upscaled to {upscaledWidth}x{upscaledHeight}\nHybrid: NNImage + repliKate";
+            UpscalingStatusText.Foreground = Avalonia.Media.Brushes.LightGreen;
+            SaveUpscaledButton.IsEnabled = true;
+
+            Console.WriteLine($"[Upscale] Successfully upscaled to {upscaledWidth}x{upscaledHeight} using hybrid approach");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Upscale] Error during upscaling: {ex.Message}");
+            Console.WriteLine($"[Upscale] Stack trace: {ex.StackTrace}");
+
+            progressDialog.Error($"Upscaling failed: {ex.Message}");
+            await Task.Delay(2000);
+            progressDialog.Close();
+
+            UpscalingStatusText.Text = $"✗ Upscaling failed: {ex.Message}";
+            UpscalingStatusText.Foreground = Avalonia.Media.Brushes.OrangeRed;
+        }
+        finally
+        {
+            UpscaleImageButton.IsEnabled = true;
+            LoadUpscaleImageButton.IsEnabled = true;
+        }
+    }
+
+    private async void SaveUpscaledButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_upscaledBitmap == null)
+            return;
+
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Save Upscaled Image",
+            DefaultExtension = "png",
+            SuggestedFileName = $"upscaled_{DateTime.Now:yyyyMMdd_HHmmss}.png",
+            FileTypeChoices = new[]
+            {
+                new FilePickerFileType("PNG Image") { Patterns = new[] { "*.png" } }
+            }
+        });
+
+        if (file != null)
+        {
+            using var stream = await file.OpenWriteAsync();
+            _upscaledBitmap.Save(stream);
+
+            UpscalingStatusText.Text = "✓ Upscaled image saved!";
+            UpscalingStatusText.Foreground = Avalonia.Media.Brushes.LightGreen;
+            Console.WriteLine("[Upscale] Upscaled image saved successfully");
+        }
     }
 
     protected override void OnClosing(WindowClosingEventArgs e)

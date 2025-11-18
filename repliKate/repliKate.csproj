@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>repliKate</RootNamespace>
+    <AssemblyName>repliKate</AssemblyName>
+    <OutputType>Library</OutputType>
+    <!-- Disable auto-generation of assembly attributes to avoid duplicates -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="**/*.cs" />
+    <Compile Include="Tensor.cs" />
+    <Compile Include="TensorSequenceTree.cs" />
+  </ItemGroup>
+</Project>
