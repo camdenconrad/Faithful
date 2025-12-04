@@ -421,6 +421,16 @@
                                 <ComboBoxItem Content="8x (8k Resolution)"/>
                             </ComboBox>
 
+                            <CheckBox Name="PixelArtModeCheckBox"
+                                      Content="🎨 Pixel Art Mode"
+                                      IsChecked="False"
+                                      VerticalAlignment="Center"
+                                      Margin="0,0,0,8">
+                                <ToolTip.Tip>
+                                    Applies pixel art grid detection and color snapping after upscaling for clean pixel art results
+                                </ToolTip.Tip>
+                            </CheckBox>
+
                             <Button Name="UpscaleImageButton" 
                                   Content="🚀 Upscale with repliKate" 
                                   Click="UpscaleImageButton_Click"

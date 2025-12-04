@@ -2383,6 +2383,14 @@ public partial class MainWindow : Window
             progressDialog.AddLog("✓ RK-dominant training complete");
             progressDialog.UpdateProgress(1, 4, "🧠 RK-DOMINANT upscaling with CUDA...");
 
+            // Check if pixel art mode is enabled
+            var pixelArtMode = PixelArtModeCheckBox.IsChecked ?? false;
+            if (pixelArtMode)
+            {
+                progressDialog.AddLog("🎨 Pixel Art Mode: ENABLED");
+                progressDialog.AddLog("• Post-processing: Grid detection & color snapping");
+            }
+
             // RK-DOMINANT CUDA UPSCALING: repliKate is the brain, NN assists
             var (upscaledPixels, upscaledWidth, upscaledHeight) = await Task.Run(() =>
             {
@@ -2399,7 +2407,7 @@ public partial class MainWindow : Window
 
                     // Use existing upscaler method - it will leverage GPU internally for RK and NN
                     // The ImageUpscaler class should be configured to prioritize RK processing
-                    return upscaler.Upscale(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight, scaleFactor);
+                    return upscaler.Upscale(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight, scaleFactor, pixelArtMode);
                 }
                 else
                 {
@@ -2409,7 +2417,7 @@ public partial class MainWindow : Window
                     progressDialog.AddLog("• RK handles majority of upscaling work");
 
                     Console.WriteLine("[Upscale] CPU RK-enhanced mode with intensive sequence prediction");
-                    return upscaler.Upscale(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight, scaleFactor);
+                    return upscaler.Upscale(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight, scaleFactor, pixelArtMode);
                 }
             });
 

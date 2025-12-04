@@ -247,7 +247,7 @@ public class ImageUpscaler
     /// <summary>
     /// PROGRESSIVE upscaling with optional HYPER-DETAILING: Multiple small steps for maximum speed AND quality
     /// </summary>
-    public (uint[] pixels, int width, int height) Upscale(uint[] inputPixels, int inputWidth, int inputHeight, int targetScaleFactor)
+    public (uint[] pixels, int width, int height) Upscale(uint[] inputPixels, int inputWidth, int inputHeight, int targetScaleFactor, bool pixelArtMode = false)
     {
         // 1x mode - cleanup only, no upscaling
         if (targetScaleFactor == 1)
@@ -265,6 +265,13 @@ public class ImageUpscaler
             if (_useHyperDetailing)
             {
                 result = ApplyHyperDetailing(result.pixels, result.width, result.height);
+            }
+
+            // Apply pixel art post-processing if enabled
+            if (pixelArtMode)
+            {
+                Console.WriteLine($"\n[ImageUpscaler] ═══ Applying PIXEL ART MODE post-processing ═══");
+                result.pixels = ApplyPixelArtPostProcessing(result.pixels, result.width, result.height, inputPixels, inputWidth, inputHeight, targetScaleFactor);
             }
 
             return result;
@@ -331,7 +338,22 @@ public class ImageUpscaler
         if (_useHyperDetailing)
         {
             Console.WriteLine($"\n[ImageUpscaler] ═══ Applying HYPER-DETAILING to final result ═══");
-            (currentPixels, currentWidth, currentHeight) = ApplyHyperDetailing(currentPixels, currentWidth, currentHeight);
+            if (pixelArtMode)
+            {
+                Console.WriteLine($"[ImageUpscaler] 🎨 Pixel art mode: Using reduced sharpening for cleaner pixel art");
+                (currentPixels, currentWidth, currentHeight) = ApplyHyperDetailingPixelArt(currentPixels, currentWidth, currentHeight);
+            }
+            else
+            {
+                (currentPixels, currentWidth, currentHeight) = ApplyHyperDetailing(currentPixels, currentWidth, currentHeight);
+            }
+        }
+
+        // Apply pixel art post-processing if enabled
+        if (pixelArtMode)
+        {
+            Console.WriteLine($"\n[ImageUpscaler] ═══ Applying PIXEL ART MODE post-processing ═══");
+            currentPixels = ApplyPixelArtPostProcessing(currentPixels, currentWidth, currentHeight, inputPixels, inputWidth, inputHeight, targetScaleFactor);
         }
 
         var totalElapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - overallStart) / (double)System.Diagnostics.Stopwatch.Frequency;
@@ -494,7 +516,7 @@ public class ImageUpscaler
         Console.WriteLine($"[ImageUpscaler] ⚡ Pass 3: GPU detail refinement (intensity: 0.7)...");
         pixels = EnhanceDetailsGpu(pixels, width, height, intensity: 0.7f, genuineDetailMask: isGenuine);
 
-        // Pass 4: Adaptive sharpening that respects original
+        // Pass 4: Adaptive sharpening that respects original  
         Console.WriteLine($"[ImageUpscaler] ⚡ Pass 4: Adaptive sharpening with artifact protection (strength: 0.9)...");
         pixels = SharpenGpu(pixels, width, height, strength: 0.9f, detailStrengthMap: detailStrength);
 
@@ -1737,6 +1759,287 @@ public class ImageUpscaler
     {
         _useHyperDetailing = enabled;
         Console.WriteLine($"[ImageUpscaler] Hyper-detailing: {(enabled ? "ENABLED (artifact-aware enhancement)" : "DISABLED")}");
+    }
+
+    /// <summary>
+    /// Apply reduced-sharpness hyper-detailing optimized for pixel art
+    /// Uses gentler sharpening to avoid over-processing pixel art
+    /// </summary>
+    private (uint[] pixels, int width, int height) ApplyHyperDetailingPixelArt(uint[] pixels, int width, int height)
+    {
+        var detailStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        // Analyze genuine detail (same as regular version)
+        Console.WriteLine($"[ImageUpscaler] ⚡ Pass 0: Artifact analysis & detail preservation map...");
+        var (isGenuine, detailStrength) = AnalyzeGenuineDetail(pixels, width, height);
+
+        var genuineCount = isGenuine.Count(x => x);
+        Console.WriteLine($"[ImageUpscaler] Identified {genuineCount:N0}/{pixels.Length:N0} genuine detail pixels ({genuineCount * 100.0 / pixels.Length:F1}%)");
+
+        // Pass 1: Very gentle enhancement for pixel art
+        Console.WriteLine($"[ImageUpscaler] 🎨 Pass 1: Gentle detail enhancement for pixel art (intensity: 0.4)...");
+        pixels = EnhanceDetailsGpu(pixels, width, height, intensity: 0.4f, genuineDetailMask: isGenuine);
+
+        // Pass 2: Skip RepliKate micro-details for pixel art (can create unwanted texture)
+        Console.WriteLine($"[ImageUpscaler] 🎨 Pass 2: Skipping micro-details for clean pixel art...");
+
+        // Pass 3: Very light refinement
+        Console.WriteLine($"[ImageUpscaler] 🎨 Pass 3: Light refinement (intensity: 0.3)...");
+        pixels = EnhanceDetailsGpu(pixels, width, height, intensity: 0.3f, genuineDetailMask: isGenuine);
+
+        // Pass 4: Reduced sharpening for pixel art
+        Console.WriteLine($"[ImageUpscaler] 🎨 Pass 4: Gentle sharpening for pixel art (strength: 0.4)...");
+        pixels = SharpenGpu(pixels, width, height, strength: 0.4f, detailStrengthMap: detailStrength);
+
+        // Pass 5: Gentle smoothing
+        Console.WriteLine($"[ImageUpscaler] 🎨 Pass 5: Gentle artifact removal for pixel art...");
+        pixels = SmoothBlotchesPreserveEdges(pixels, width, height, genuineDetailMask: isGenuine);
+
+        var detailElapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - detailStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+        Console.WriteLine($"[ImageUpscaler] ✓ Pixel art hyper-detailing complete in {detailElapsed:F2}s");
+
+        return (pixels, width, height);
+    }
+
+    /// <summary>
+    /// ULTRA-FAST pixel art post-processing with aggressive optimization
+    /// PALETTE-CONSTRAINED: Only uses colors from the original image - never creates new colors
+    /// PERFORMANCE: Pre-computed color mappings + aggressive multithreading for maximum speed
+    /// </summary>
+    private uint[] ApplyPixelArtPostProcessing(uint[] pixels, int width, int height, uint[] originalPixels, int originalWidth, int originalHeight, int scaleFactor)
+    {
+        var startTime = System.Diagnostics.Stopwatch.GetTimestamp();
+        Console.WriteLine($"[ImageUpscaler] ⚡ ULTRA-FAST Pixel Art Mode: Processing {width}x{height} image");
+        Console.WriteLine($"[ImageUpscaler] Original: {originalWidth}x{originalHeight}, Scale: {scaleFactor}x");
+
+        // STEP 1: Extract and REDUCE palette for TRUE pixel art performance
+        var paletteExtractionStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var fullPalette = new HashSet<uint>(originalPixels);
+
+        // CRITICAL: Reduce palette size for pixel art performance (real pixel art has <256 colors)
+        var paletteArray = ReducePaletteForPixelArt(fullPalette, targetColors: 512); // Max 512 colors for speed
+        var paletteExtractionTime = (System.Diagnostics.Stopwatch.GetTimestamp() - paletteExtractionStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+
+        Console.WriteLine($"[ImageUpscaler] ⚡ Reduced palette from {fullPalette.Count} to {paletteArray.Length} colors in {paletteExtractionTime * 1000:F1}ms");
+        Console.WriteLine($"[ImageUpscaler] ✓ PIXEL ART OPTIMIZED: Using {paletteArray.Length} most important colors only");
+
+        // STEP 2: PRE-COMPUTE ULTRA-FAST color lookup table (much faster than cache)
+        var lookupStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var colorLookupTable = BuildUltraFastColorLookupTable(paletteArray);
+        var lookupTime = (System.Diagnostics.Stopwatch.GetTimestamp() - lookupStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+        Console.WriteLine($"[ImageUpscaler] ⚡ Built 256³ color lookup table in {lookupTime * 1000:F1}ms");
+
+        var result = new uint[pixels.Length];
+
+        // Calculate grid size
+        var gridSize = scaleFactor >= 8 ? 4 : scaleFactor >= 4 ? scaleFactor / 2 : scaleFactor;
+        var gridWidth = (width + gridSize - 1) / gridSize;
+        var gridHeight = (height + gridSize - 1) / gridSize;
+        var totalGridCells = gridWidth * gridHeight;
+
+        Console.WriteLine($"[ImageUpscaler] ⚡ Processing {totalGridCells:N0} grid cells ({gridSize}x{gridSize} each) with {_cpuThreadCount} threads");
+
+        // STEP 3: ULTRA-AGGRESSIVE parallel processing with optimized work distribution
+        var processedCells = 0L;
+        var lastReportTime = System.Diagnostics.Stopwatch.GetTimestamp();
+        var reportInterval = (long)(System.Diagnostics.Stopwatch.Frequency * 0.5); // Report every 500ms
+
+        // Use custom partitioning for optimal CPU utilization
+        var cellsPerThread = Math.Max(100, totalGridCells / (_cpuThreadCount * 4)); // More granular work units
+        var partitioner = System.Collections.Concurrent.Partitioner.Create(0, totalGridCells, cellsPerThread);
+
+        Parallel.ForEach(partitioner, new ParallelOptions { MaxDegreeOfParallelism = _cpuThreadCount }, range =>
+        {
+            var localProcessed = 0;
+
+            for (int cellIndex = range.Item1; cellIndex < range.Item2; cellIndex++)
+            {
+                var gridX = cellIndex % gridWidth;
+                var gridY = cellIndex / gridWidth;
+
+                var startX = gridX * gridSize;
+                var startY = gridY * gridSize;
+                var endX = Math.Min(startX + gridSize, width);
+                var endY = Math.Min(startY + gridSize, height);
+
+                // LIGHTNING-FAST palette color selection with lookup table
+                var paletteColor = FindBestPaletteColorLightning(pixels, width, startX, startY, endX, endY, colorLookupTable);
+
+                // Apply color to entire grid cell in tight loop for maximum speed
+                for (int y = startY; y < endY; y++)
+                {
+                    var rowOffset = y * width;
+                    for (int x = startX; x < endX; x++)
+                    {
+                        result[rowOffset + x] = paletteColor;
+                    }
+                }
+
+                localProcessed++;
+            }
+
+            var currentProcessed = Interlocked.Add(ref processedCells, localProcessed);
+
+            // Progress reporting (throttled)
+            var currentTime = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (currentTime - lastReportTime > reportInterval)
+            {
+                if (Interlocked.CompareExchange(ref lastReportTime, currentTime, lastReportTime) == lastReportTime)
+                {
+                    var progress = (currentProcessed * 100) / totalGridCells;
+                    var elapsed = (currentTime - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
+                    var cellsPerSec = currentProcessed / elapsed;
+                    var eta = (totalGridCells - currentProcessed) / cellsPerSec;
+
+                    Console.WriteLine($"[ImageUpscaler] ⚡ {progress}% | {cellsPerSec / 1000:F1}K cells/s | ETA: {eta:F1}s");
+                }
+            }
+        });
+
+        var totalElapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
+        var finalSpeed = totalGridCells / totalElapsed;
+
+        Console.WriteLine($"[ImageUpscaler] ⚡⚡⚡ ULTRA-FAST pixel art complete in {totalElapsed:F2}s!");
+        Console.WriteLine($"[ImageUpscaler] ⚡ Performance: {finalSpeed / 1000:F1}K cells/sec with {_cpuThreadCount} threads");
+        Console.WriteLine($"[ImageUpscaler] ✓ AUTHENTIC: All colors from reduced {paletteArray.Length}-color palette");
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reduce palette to pixel art range for MAXIMUM performance
+    /// Real pixel art rarely has more than 256 colors - reducing palette gives massive speedup
+    /// </summary>
+    private uint[] ReducePaletteForPixelArt(HashSet<uint> fullPalette, int targetColors)
+    {
+        if (fullPalette.Count <= targetColors)
+        {
+            return fullPalette.ToArray();
+        }
+
+        Console.WriteLine($"[ImageUpscaler] Reducing {fullPalette.Count} colors to {targetColors} most important colors...");
+
+        // Fast palette reduction using frequency-based selection
+        var colorFreq = new Dictionary<uint, int>();
+
+        // Count would require re-scanning image, so use simpler approach:
+        // Take colors distributed across the RGB space for good coverage
+        var paletteList = fullPalette.ToList();
+
+        // Sort by RGB values to get good distribution
+        paletteList.Sort((a, b) => 
+        {
+            var aSum = ((a >> 16) & 0xFF) + ((a >> 8) & 0xFF) + (a & 0xFF);
+            var bSum = ((b >> 16) & 0xFF) + ((b >> 8) & 0xFF) + (b & 0xFF);
+            return aSum.CompareTo(bSum);
+        });
+
+        // Take evenly distributed colors
+        var reducedPalette = new List<uint>();
+        var step = (float)paletteList.Count / targetColors;
+
+        for (int i = 0; i < targetColors && i * step < paletteList.Count; i++)
+        {
+            var index = (int)(i * step);
+            reducedPalette.Add(paletteList[index]);
+        }
+
+        Console.WriteLine($"[ImageUpscaler] ✓ Palette reduced to {reducedPalette.Count} colors for pixel art speed");
+        return reducedPalette.ToArray();
+    }
+
+    /// <summary>
+    /// Build LIGHTNING-FAST color lookup table for instant palette matching
+    /// Pre-computes nearest palette color for common RGB combinations
+    /// </summary>
+    private uint[] BuildUltraFastColorLookupTable(uint[] paletteArray)
+    {
+        // Build a 64x64x64 lookup table (262K entries) for 6-bit RGB precision
+        // This covers all common colors with lightning-fast O(1) lookup
+        var tableSize = 64;
+        var lookupTable = new uint[tableSize * tableSize * tableSize];
+
+        Console.WriteLine($"[ImageUpscaler] Building {tableSize}³ = {lookupTable.Length:N0} entry lookup table...");
+
+        Parallel.For(0, lookupTable.Length, new ParallelOptions { MaxDegreeOfParallelism = _cpuThreadCount }, i =>
+        {
+            // Convert index to RGB (6-bit precision)
+            var b = (i % tableSize) * 4; // Scale 0-63 to 0-252
+            var g = ((i / tableSize) % tableSize) * 4;
+            var r = (i / (tableSize * tableSize)) * 4;
+
+            // Find nearest palette color for this RGB
+            var targetColor = 0xFF000000u | ((uint)r << 16) | ((uint)g << 8) | (uint)b;
+
+            uint bestPaletteColor = paletteArray[0];
+            var minDistanceSquared = int.MaxValue;
+
+            foreach (var paletteColor in paletteArray)
+            {
+                var pr = (int)((paletteColor >> 16) & 0xFF);
+                var pg = (int)((paletteColor >> 8) & 0xFF);
+                var pb = (int)(paletteColor & 0xFF);
+
+                var dr = pr - r;
+                var dg = pg - g;
+                var db = pb - b;
+                var distanceSquared = dr * dr + dg * dg + db * db;
+
+                if (distanceSquared < minDistanceSquared)
+                {
+                    minDistanceSquared = distanceSquared;
+                    bestPaletteColor = paletteColor;
+                }
+            }
+
+            lookupTable[i] = bestPaletteColor;
+        });
+
+        Console.WriteLine($"[ImageUpscaler] ✓ Lookup table built - all color matches are now O(1)!");
+        return lookupTable;
+    }
+
+    /// <summary>
+    /// LIGHTNING-FAST palette color selection using pre-computed lookup table
+    /// O(1) color matching - no distance calculations needed!
+    /// </summary>
+    private uint FindBestPaletteColorLightning(uint[] pixels, int width, int startX, int startY, int endX, int endY, uint[] colorLookupTable)
+    {
+        // Fast average color calculation
+        var totalR = 0L;
+        var totalG = 0L;
+        var totalB = 0L;
+        var pixelCount = (endX - startX) * (endY - startY);
+
+        // Optimized sampling: only sample every 2nd pixel for speed in large regions
+        var step = pixelCount > 16 ? 2 : 1;
+
+        for (int y = startY; y < endY; y += step)
+        {
+            var rowOffset = y * width;
+            for (int x = startX; x < endX; x += step)
+            {
+                var pixel = pixels[rowOffset + x];
+                totalR += (pixel >> 16) & 0xFF;
+                totalG += (pixel >> 8) & 0xFF;
+                totalB += pixel & 0xFF;
+            }
+        }
+
+        var actualPixelCount = ((endY - startY + step - 1) / step) * ((endX - startX + step - 1) / step);
+        if (actualPixelCount == 0) actualPixelCount = 1;
+
+        var avgR = (int)(totalR / actualPixelCount);
+        var avgG = (int)(totalG / actualPixelCount);
+        var avgB = (int)(totalB / actualPixelCount);
+
+        // LIGHTNING-FAST O(1) lookup using pre-computed table
+        var lookupR = Math.Min(avgR / 4, 63); // Convert to 6-bit (0-63)
+        var lookupG = Math.Min(avgG / 4, 63);
+        var lookupB = Math.Min(avgB / 4, 63);
+        var lookupIndex = lookupR * (64 * 64) + lookupG * 64 + lookupB;
+
+        return colorLookupTable[lookupIndex];
     }
 }
 
