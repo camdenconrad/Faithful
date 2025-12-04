@@ -15,6 +15,11 @@ public class ImageTrainer
     private readonly GpuAccelerator _gpu;
     private readonly int _neighborhoodRadius = 1; // Use 3x3 neighborhood (radius 1)
 
+    // RepliKate upscaling support
+    private ImageUpscaler? _upscaler;
+    private bool _enableUpscalingDuringTraining = false;
+    private int _trainingUpscaleFactor = 2;
+
     public ImageTrainer(int quantizationLevel, GpuAccelerator gpu)
     {
         _quantizationLevel = quantizationLevel;
@@ -25,12 +30,65 @@ public class ImageTrainer
         Console.WriteLine($"[ImageTrainer] Using {(_neighborhoodRadius * 2 + 1)}x{(_neighborhoodRadius * 2 + 1)} neighborhood patterns");
     }
 
+    /// <summary>
+    /// Enable upscaling of training images using RepliKate
+    /// This enhances training data quality and captures finer details
+    /// </summary>
+    public void EnableTrainingUpscaling(int scaleFactor = 2, bool useHyperDetailing = true)
+    {
+        _enableUpscalingDuringTraining = true;
+        _trainingUpscaleFactor = scaleFactor;
+
+        // Create upscaler with quantizer for consistency
+        _upscaler = new ImageUpscaler(
+            nnImageGraph: null, // Will be set later if needed
+            quantizer: _quantizer,
+            gpu: _gpu,
+            patchSize: 3
+        );
+
+        _upscaler.SetUseHyperDetailing(useHyperDetailing);
+
+        Console.WriteLine($"[ImageTrainer] RepliKate upscaling ENABLED: {scaleFactor}x scale factor");
+        Console.WriteLine($"[ImageTrainer] Hyper-detailing: {(useHyperDetailing ? "ENABLED" : "DISABLED")}");
+    }
+
+    /// <summary>
+    /// Disable upscaling during training
+    /// </summary>
+    public void DisableTrainingUpscaling()
+    {
+        _enableUpscalingDuringTraining = false;
+        _upscaler = null;
+        Console.WriteLine($"[ImageTrainer] RepliKate upscaling DISABLED");
+    }
+
     public void ProcessImageData(uint[] pixels, int width, int height)
     {
         Console.WriteLine($"[ImageTrainer] ProcessImageData called - Size: {width}x{height}, Pixels: {pixels.Length}");
 
         try
         {
+            // Upscale training images if enabled
+            if (_enableUpscalingDuringTraining && _upscaler != null && _trainingUpscaleFactor > 1)
+            {
+                Console.WriteLine($"[ImageTrainer] ═══ UPSCALING TRAINING IMAGE with RepliKate ═══");
+
+                // Train upscaler on the original image first
+                _upscaler.TrainOnImage(pixels, width, height);
+
+                // Upscale the image
+                var (upscaledPixels, upscaledWidth, upscaledHeight) = 
+                    _upscaler.Upscale(pixels, width, height, _trainingUpscaleFactor);
+
+                Console.WriteLine($"[ImageTrainer] Training on upscaled image: {upscaledWidth}x{upscaledHeight}");
+
+                // Use upscaled image for training
+                pixels = upscaledPixels;
+                width = upscaledWidth;
+                height = upscaledHeight;
+            }
+
             // Extract all colors first if palette not built
             if (!_paletteBuilt)
             {

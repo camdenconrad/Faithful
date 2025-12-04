@@ -443,6 +443,51 @@ public class MultiScaleContextGraph
     }
 
     /// <summary>
+    /// Create a Wave Function Collapse generator with integrated RepliKate upscaling
+    /// </summary>
+    public WaveFunctionCollapseGenerator CreateWFCGeneratorWithUpscaling(
+        int upscaleFactor = 2, 
+        ColorQuantizer? quantizer = null,
+        int? seed = null)
+    {
+        var generator = new WaveFunctionCollapseGenerator(_fastGraph, seed);
+
+        // Create upscaler with this graph's knowledge
+        var upscaler = new Services.ImageUpscaler(
+            nnImageGraph: this,
+            quantizer: quantizer,
+            gpu: _gpu,
+            patchSize: 3
+        );
+
+        upscaler.SetUseHyperDetailing(true);
+
+        generator.EnableGenerationUpscaling(upscaleFactor, upscaler);
+
+        Console.WriteLine($"[MultiScaleContextGraph] Created WFC generator with {upscaleFactor}x RepliKate upscaling");
+
+        return generator;
+    }
+
+    /// <summary>
+    /// Create an ImageUpscaler trained on this graph's patterns
+    /// Useful for upscaling existing images with learned style
+    /// </summary>
+    public Services.ImageUpscaler CreateUpscaler(ColorQuantizer? quantizer = null, int patchSize = 3)
+    {
+        var upscaler = new Services.ImageUpscaler(
+            nnImageGraph: this,
+            quantizer: quantizer,
+            gpu: _gpu,
+            patchSize: patchSize
+        );
+
+        Console.WriteLine($"[MultiScaleContextGraph] Created RepliKate upscaler with learned patterns");
+
+        return upscaler;
+    }
+
+    /// <summary>
     /// Get the native resolution (largest image trained on)
     /// Graph uses normalized positions so it works at any resolution,
     /// but this tells you the max detail level it has learned

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using NNImage.Services;
 
 namespace NNImage.Models;
 
@@ -29,10 +30,38 @@ public class WaveFunctionCollapseGenerator
     private int _collapsedCells = 0;
     private int _totalCells = 0;
 
+    // RepliKate upscaling support
+    private ImageUpscaler? _upscaler;
+    private bool _enableUpscalingAfterGeneration = false;
+    private int _generationUpscaleFactor = 2;
+
     public WaveFunctionCollapseGenerator(FastContextGraph graph, int? seed = null)
     {
         _graph = graph;
         _random = seed.HasValue ? new Random(seed.Value) : new Random();
+    }
+
+    /// <summary>
+    /// Enable upscaling of generated images using RepliKate
+    /// This enhances output quality with learned detail patterns
+    /// </summary>
+    public void EnableGenerationUpscaling(int scaleFactor = 2, ImageUpscaler? upscaler = null)
+    {
+        _enableUpscalingAfterGeneration = true;
+        _generationUpscaleFactor = scaleFactor;
+        _upscaler = upscaler;
+
+        Console.WriteLine($"[WFCGenerator] RepliKate upscaling ENABLED: {scaleFactor}x scale factor");
+    }
+
+    /// <summary>
+    /// Disable upscaling after generation
+    /// </summary>
+    public void DisableGenerationUpscaling()
+    {
+        _enableUpscalingAfterGeneration = false;
+        _upscaler = null;
+        Console.WriteLine($"[WFCGenerator] RepliKate upscaling DISABLED");
     }
 
     /// <summary>
@@ -117,7 +146,71 @@ public class WaveFunctionCollapseGenerator
             }
         }
 
+        // Upscale if enabled
+        if (_enableUpscalingAfterGeneration && _upscaler != null && _generationUpscaleFactor > 1)
+        {
+            OnStatusUpdate?.Invoke($"Upscaling generated image with RepliKate ({_generationUpscaleFactor}x)...");
+            result = await UpscaleGeneratedImageAsync(result, width, height, cancellationToken);
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// Upscale generated image using RepliKate
+    /// </summary>
+    private async Task<ColorRgb[,]> UpscaleGeneratedImageAsync(
+        ColorRgb[,] image, 
+        int width, 
+        int height,
+        CancellationToken cancellationToken)
+    {
+        if (_upscaler == null) return image;
+
+        // Convert ColorRgb[,] to uint[]
+        var pixels = new uint[width * height];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                var color = image[y, x];
+                pixels[y * width + x] = ColorToUInt32(color);
+            }
+        }
+
+        // Train upscaler on generated image for better coherence
+        await Task.Run(() => _upscaler.TrainOnImage(pixels, width, height), cancellationToken);
+
+        // Upscale
+        var (upscaledPixels, upscaledWidth, upscaledHeight) = 
+            await Task.Run(() => _upscaler.Upscale(pixels, width, height, _generationUpscaleFactor), cancellationToken);
+
+        // Convert back to ColorRgb[,]
+        var result = new ColorRgb[upscaledHeight, upscaledWidth];
+        for (int y = 0; y < upscaledHeight; y++)
+        {
+            for (int x = 0; x < upscaledWidth; x++)
+            {
+                result[y, x] = UInt32ToColor(upscaledPixels[y * upscaledWidth + x]);
+            }
+        }
+
+        OnStatusUpdate?.Invoke($"Upscaling complete! {upscaledWidth}x{upscaledHeight}");
+
+        return result;
+    }
+
+    private static uint ColorToUInt32(ColorRgb color)
+    {
+        return 0xFF000000u | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+    }
+
+    private static ColorRgb UInt32ToColor(uint pixel)
+    {
+        var r = (byte)((pixel >> 16) & 0xFF);
+        var g = (byte)((pixel >> 8) & 0xFF);
+        var b = (byte)(pixel & 0xFF);
+        return new ColorRgb(r, g, b);
     }
 
     private async Task PlaceRandomSeeds(int count, int delayMs, CancellationToken cancellationToken)

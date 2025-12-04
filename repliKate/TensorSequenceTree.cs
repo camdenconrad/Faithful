@@ -10,12 +10,22 @@ using System.Linq;
 using System.Text;
 
 // ===============================================================================
-// OPTIMIZATION: QuantizedTensor - 75% memory reduction with 8-bit quantization
+// QUANTIZATION MODES
+// ===============================================================================
+public enum QuantizationMode
+{
+    None,   // Raw 32-bit floats (Tensor) - Maximum precision, 4x memory
+    Bit8,   // 8-bit quantization (256 values) - Compact, lossy
+    Bit16   // 16-bit quantization (65,536 values) - Balanced precision/memory
+}
+
+// ===============================================================================
+// OPTIMIZATION: QuantizedTensor - Memory reduction with quantization
 // ===============================================================================
 public class QuantizedTensor
 {
     public int[] Shape { get; private set; }
-    public byte[] QuantizedData { get; private set; }
+    public ushort[] QuantizedData { get; private set; }  // CHANGED: ushort (16-bit) instead of byte
     public float Min { get; private set; }
     public float Max { get; private set; }
     public int Size => QuantizedData.Length;
@@ -26,19 +36,19 @@ public class QuantizedTensor
         Min = data.Min();
         Max = data.Max();
 
-        QuantizedData = new byte[data.Length];
+        QuantizedData = new ushort[data.Length];  // CHANGED: ushort instead of byte
         float range = Max - Min;
 
         if (range < 1e-8f)
         {
-            Array.Fill(QuantizedData, (byte)127);
+            Array.Fill(QuantizedData, (ushort)32767);  // CHANGED: midpoint of 16-bit
         }
         else
         {
             for (int i = 0; i < data.Length; i++)
             {
                 float normalized = (data[i] - Min) / range;
-                QuantizedData[i] = (byte)Math.Clamp((int)(normalized * 255), 0, 255);
+                QuantizedData[i] = (ushort)Math.Clamp((int)(normalized * 65535), 0, 65535);  // CHANGED: 65535 instead of 255
             }
         }
     }
@@ -48,7 +58,7 @@ public class QuantizedTensor
         Shape = shape;
         int size = 1;
         foreach (int dim in shape) size *= dim;
-        QuantizedData = new byte[size];
+        QuantizedData = new ushort[size];  // CHANGED: ushort instead of byte
         Min = 0;
         Max = 1;
     }
@@ -60,7 +70,7 @@ public class QuantizedTensor
 
         for (int i = 0; i < QuantizedData.Length; i++)
         {
-            result[i] = Min + (QuantizedData[i] / 255.0f) * range;
+            result[i] = Min + (QuantizedData[i] / 65535.0f) * range;  // CHANGED: 65535 instead of 255
         }
 
         return result;
@@ -76,8 +86,8 @@ public class QuantizedTensor
 
         for (int i = 0; i < QuantizedData.Length; i++)
         {
-            int a = QuantizedData[i];
-            int b = other.QuantizedData[i];
+            long a = QuantizedData[i];  // CHANGED: long to handle 16-bit values
+            long b = other.QuantizedData[i];
 
             dot += a * b;
             magA += a * a;
@@ -112,12 +122,162 @@ public class QuantizedTensor
 }
 
 // ===============================================================================
+// NEW: DELTA REGRESSION - State tracking for recurrent-style predictions
+// ===============================================================================
+public class DeltaState
+{
+    public Tensor CurrentValue { get; set; }
+    public Tensor Velocity { get; set; }  // First-order derivative (delta)
+    public Tensor Acceleration { get; set; }  // Second-order derivative
+    public Tensor SmoothedValue { get; set; }  // Exponential moving average
+    public float Momentum { get; set; }  // Momentum factor for velocity
+    public float SmoothingFactor { get; set; }  // EMA smoothing factor (alpha)
+    public int StepCount { get; set; }
+
+    public DeltaState(int tensorSize, float momentum = 0.9f, float smoothingFactor = 0.7f)
+    {
+        CurrentValue = new Tensor(tensorSize);
+        Velocity = new Tensor(tensorSize);
+        Acceleration = new Tensor(tensorSize);
+        SmoothedValue = new Tensor(tensorSize);
+        Momentum = momentum;
+        SmoothingFactor = smoothingFactor;
+        StepCount = 0;
+    }
+
+    public DeltaState Clone()
+    {
+        var clone = new DeltaState(CurrentValue.Size, Momentum, SmoothingFactor);
+        Array.Copy(CurrentValue.Data, clone.CurrentValue.Data, CurrentValue.Size);
+        Array.Copy(Velocity.Data, clone.Velocity.Data, Velocity.Size);
+        Array.Copy(Acceleration.Data, clone.Acceleration.Data, Acceleration.Size);
+        Array.Copy(SmoothedValue.Data, clone.SmoothedValue.Data, SmoothedValue.Size);
+        clone.StepCount = StepCount;
+        return clone;
+    }
+
+    /// <summary>
+    /// Update state with new observation (like RNN hidden state update)
+    /// </summary>
+    public void Update(Tensor newValue)
+    {
+        if (StepCount > 0)
+        {
+            // Calculate new velocity (first derivative / delta)
+            Tensor newVelocity = new Tensor(newValue.Size);
+            for (int i = 0; i < newValue.Size; i++)
+            {
+                newVelocity.Data[i] = newValue.Data[i] - CurrentValue.Data[i];
+            }
+
+            // Calculate acceleration (second derivative) with momentum
+            if (StepCount > 1)
+            {
+                for (int i = 0; i < newValue.Size; i++)
+                {
+                    float velocityChange = newVelocity.Data[i] - Velocity.Data[i];
+                    Acceleration.Data[i] = Momentum * Acceleration.Data[i] +
+                                          (1 - Momentum) * velocityChange;
+                }
+            }
+
+            // Update velocity with momentum (similar to LSTM forget gate)
+            for (int i = 0; i < newValue.Size; i++)
+            {
+                Velocity.Data[i] = Momentum * Velocity.Data[i] + (1 - Momentum) * newVelocity.Data[i];
+            }
+
+            // Update exponential moving average (smoothed value)
+            for (int i = 0; i < newValue.Size; i++)
+            {
+                SmoothedValue.Data[i] = SmoothingFactor * newValue.Data[i] +
+                                       (1 - SmoothingFactor) * SmoothedValue.Data[i];
+            }
+        }
+        else
+        {
+            // Initialize smoothed value on first observation
+            Array.Copy(newValue.Data, SmoothedValue.Data, newValue.Size);
+        }
+
+        Array.Copy(newValue.Data, CurrentValue.Data, newValue.Size);
+        StepCount++;
+    }
+
+    /// <summary>
+    /// Predict next value using physics-based extrapolation
+    /// Similar to RNN forward pass but with explicit dynamics
+    /// </summary>
+    public Tensor PredictNext(int stepsAhead = 1, bool useAcceleration = true, float dampingFactor = 1.0f)
+    {
+        Tensor prediction = new Tensor(CurrentValue.Size);
+
+        for (int i = 0; i < CurrentValue.Size; i++)
+        {
+            float value = CurrentValue.Data[i];
+            float vel = Velocity.Data[i] * dampingFactor;  // Apply damping
+            float acc = useAcceleration ? Acceleration.Data[i] * dampingFactor : 0f;
+
+            // Physics-based extrapolation: x(t+dt) = x(t) + v*dt + 0.5*a*dt²
+            // This is similar to how RNNs extrapolate hidden states
+            prediction.Data[i] = value + vel * stepsAhead + 0.5f * acc * stepsAhead * stepsAhead;
+        }
+
+        return prediction;
+    }
+
+    /// <summary>
+    /// Predict using smoothed value (more stable, less reactive)
+    /// </summary>
+    public Tensor PredictNextSmoothed(int stepsAhead = 1, float dampingFactor = 0.95f)
+    {
+        Tensor prediction = new Tensor(SmoothedValue.Size);
+
+        for (int i = 0; i < SmoothedValue.Size; i++)
+        {
+            float vel = Velocity.Data[i] * dampingFactor;
+            prediction.Data[i] = SmoothedValue.Data[i] + vel * stepsAhead;
+        }
+
+        return prediction;
+    }
+
+    /// <summary>
+    /// Get confidence in predictions based on velocity/acceleration stability
+    /// High stability = high confidence
+    /// </summary>
+    public float GetPredictionConfidence()
+    {
+        if (StepCount < 3) return 0.5f;
+
+        // Calculate velocity and acceleration variance
+        float velMagnitude = 0;
+        float accMagnitude = 0;
+
+        for (int i = 0; i < Velocity.Size; i++)
+        {
+            velMagnitude += Math.Abs(Velocity.Data[i]);
+            accMagnitude += Math.Abs(Acceleration.Data[i]);
+        }
+
+        velMagnitude /= Velocity.Size;
+        accMagnitude /= Acceleration.Size;
+
+        // Lower magnitude = more stable = higher confidence
+        float velConfidence = 1.0f / (1.0f + velMagnitude);
+        float accConfidence = 1.0f / (1.0f + accMagnitude);
+
+        return 0.6f * velConfidence + 0.4f * accConfidence;
+    }
+}
+
+// ===============================================================================
 // OPTIMIZATION: TensorNode now stores indices instead of cloning tensors
 // ===============================================================================
 public class TensorNode
 {
-    public int SequenceIndex { get; private set; }  // OPTIMIZED: Index instead of cloned tensor
-    private Dictionary<int, float> nextIndices;      // OPTIMIZED: Indices instead of tensor list
+    public int SequenceIndex { get; set; }  // FIXED: Changed to setter for index updates
+    private Dictionary<int, float> nextIndices;
     private float totalWeight;
 
     public TensorNode(int sequenceIndex)
@@ -134,6 +294,34 @@ public class TensorNode
 
         nextIndices[nextIndex] += weight;
         totalWeight += weight;
+    }
+
+    // FIXED: Add method to update indices after removal
+    public void UpdateIndicesAfterRemoval(int removedCount)
+    {
+        SequenceIndex = Math.Max(0, SequenceIndex - removedCount);
+
+        var updatedNextIndices = new Dictionary<int, float>();
+        foreach (var kvp in nextIndices)
+        {
+            int newIndex = kvp.Key - removedCount;
+            if (newIndex >= 0)
+            {
+                updatedNextIndices[newIndex] = kvp.Value;
+            }
+            else
+            {
+                // This transition points to removed data, subtract its weight
+                totalWeight -= kvp.Value;
+            }
+        }
+        nextIndices = updatedNextIndices;
+    }
+
+    // FIXED: Add method to check if node is still valid
+    public bool IsValid(int maxSequenceLength)
+    {
+        return SequenceIndex >= 0 && SequenceIndex < maxSequenceLength && nextIndices.Count > 0;
     }
 
     public int GetMostLikelyNextIndex()
@@ -192,8 +380,8 @@ public class TensorNode
 public class TensorSequenceTree
 {
     private List<TensorNode> nodes;
-    private List<QuantizedTensor> fullSequence;  // OPTIMIZED: Using quantized tensors
-    private Dictionary<int, List<(List<int> contextIndices, Dictionary<int, float> nextIndices)>> nGrams;  // OPTIMIZED: Store indices not tensors
+    private List<QuantizedTensor> fullSequence;
+    private Dictionary<int, List<(List<int> contextIndices, Dictionary<int, float> nextIndices)>> nGrams;
     private Dictionary<int, Dictionary<int, int>> nGramHashIndex;
     private Dictionary<int, int> tensorHashIndex;
     private int maxContextWindow;
@@ -210,20 +398,29 @@ public class TensorSequenceTree
     private bool useExperienceReplay;
     private bool useQuantization;
 
-    private const int MAX_SEQUENCE_LENGTH = 50000;
-    private const int MAX_NODES = 10000;
-    private const int MAX_NGRAM_ENTRIES_PER_N = 5000;
-    private const int DEFAULT_EXPERIENCE_CAPACITY = 1000;
+    // NEW: Delta regression state tracking
+    private DeltaState deltaState;
+    private bool useDeltaRegression;
+    private List<DeltaState> deltaHistory;  // History of delta states for advanced predictions
+    private int maxDeltaHistorySize;
 
-    public TensorSequenceTree(
-        int maxContextWindow = 100,
+    private const int MAX_SEQUENCE_LENGTH = 5000000;
+    private const int MAX_NODES = 100000000;
+    private const int MAX_NGRAM_ENTRIES_PER_N = 5000;
+    private const int DEFAULT_EXPERIENCE_CAPACITY = 10000000;
+    private const int DEFAULT_DELTA_HISTORY_SIZE = 50;
+
+    public TensorSequenceTree(int maxContextWindow = 100,
         float similarityThreshold = 0.95f,
         float temporalDecay = 0.9995f,
         float temperature = 1.0f,
         float explorationRate = 0.05f,
         bool enableExperienceReplay = true,
         int experienceCapacity = DEFAULT_EXPERIENCE_CAPACITY,
-        bool useQuantization = true)
+        QuantizationMode quantizationMode = QuantizationMode.None,
+        bool useQuantization = true,
+        bool enableDeltaRegression = true,
+        int deltaHistorySize = DEFAULT_DELTA_HISTORY_SIZE)
     {
         nodes = new List<TensorNode>();
         fullSequence = new List<QuantizedTensor>();
@@ -235,6 +432,11 @@ public class TensorSequenceTree
         experienceBufferCapacity = experienceCapacity;
         useExperienceReplay = enableExperienceReplay;
         this.useQuantization = useQuantization;
+
+        // NEW: Initialize delta regression components
+        this.useDeltaRegression = enableDeltaRegression;
+        this.deltaHistory = new List<DeltaState>();
+        this.maxDeltaHistorySize = deltaHistorySize;
 
         this.maxContextWindow = Math.Max(2, Math.Min(maxContextWindow, 100));
         this.similarityThreshold = similarityThreshold;
@@ -252,15 +454,141 @@ public class TensorSequenceTree
         }
     }
 
-    // Save/Load methods would go here - keeping them the same structure but adapted for quantized tensors
-    // (Implementation omitted for brevity - same pattern as original but with QuantizedTensor)
-
     public int GetMaxContextWindow() => maxContextWindow;
     public int GetTensorSize() => tensorSize;
+
+    /// <summary>
+    /// Find where a sequence best fits in the existing learned data
+    /// Returns (bestMatchIndex, matchLength, isCompletelyNew)
+    /// </summary>
+    private (int matchIndex, int matchLength, bool isNew) FindSequenceMatch(Tensor[] sequence)
+    {
+        if (fullSequence.Count == 0 || sequence.Length == 0)
+            return (-1, 0, true);
+
+        int bestMatchIndex = -1;
+        int bestMatchLength = 0;
+        float bestMatchScore = 0;
+
+        // Convert sequence to quantized for comparison
+        var qSequence = sequence.Select(t => QuantizedTensor.FromTensor(t)).ToArray();
+
+        // Search for the best matching position
+        for (int i = 0; i <= fullSequence.Count - sequence.Length; i++)
+        {
+            int matchLength = 0;
+            float totalSimilarity = 0;
+
+            // Check how many consecutive tensors match
+            for (int j = 0; j < sequence.Length && (i + j) < fullSequence.Count; j++)
+            {
+                float similarity = qSequence[j].CosineSimilarityQuantized(fullSequence[i + j]);
+
+                if (similarity >= 0.95f) // INCREASED from 0.85 - stricter matching
+                {
+                    matchLength++;
+                    totalSimilarity += similarity;
+                }
+                else
+                {
+                    break; // Stop at first mismatch
+                }
+            }
+
+            if (matchLength > 0)
+            {
+                float avgSimilarity = totalSimilarity / matchLength;
+                float score = matchLength * avgSimilarity;
+
+                if (score > bestMatchScore)
+                {
+                    bestMatchScore = score;
+                    bestMatchIndex = i;
+                    bestMatchLength = matchLength;
+                }
+            }
+        }
+
+        // Also check if sequence is a continuation (matches the end)
+        int tailCheckSize = Math.Min(sequence.Length, fullSequence.Count);
+        int tailMatchLength = 0;
+        float tailTotalSimilarity = 0;
+
+        for (int i = 0; i < tailCheckSize; i++)
+        {
+            int fullSeqIdx = fullSequence.Count - tailCheckSize + i;
+            float similarity = qSequence[i].CosineSimilarityQuantized(fullSequence[fullSeqIdx]);
+
+            if (similarity >= 0.95f)  // INCREASED from 0.85 - stricter matching
+            {
+                tailMatchLength++;
+                tailTotalSimilarity += similarity;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (tailMatchLength > 0)
+        {
+            float tailAvgSimilarity = tailTotalSimilarity / tailMatchLength;
+            float tailScore = tailMatchLength * tailAvgSimilarity;
+
+            if (tailScore > bestMatchScore)
+            {
+                bestMatchIndex = fullSequence.Count - tailMatchLength;
+                bestMatchLength = tailMatchLength;
+                bestMatchScore = tailScore;
+            }
+        }
+
+        // Consider it "new" if match is less than 80% of sequence length
+        // INCREASED from 30% to 80% to be more conservative
+        bool isCompletelyNew = bestMatchLength < (sequence.Length * 0.80f);
+
+        return (bestMatchIndex, bestMatchLength, isCompletelyNew);
+    }
+
+    /// <summary>
+    /// Find or reuse an existing tensor index (cross-tree pollination)
+    /// Returns the index of a matching tensor if found, otherwise -1
+    /// </summary>
+    private int FindOrReuseTensorIndex(QuantizedTensor tensor, float reuseThreshold = 0.95f)
+    {
+        // Check hash index first
+        int hash = ComputeTensorHash(tensor);
+        if (tensorHashIndex.TryGetValue(hash, out int idx))
+        {
+            if (idx >= 0 && idx < fullSequence.Count)
+            {
+                float sim = tensor.CosineSimilarityQuantized(fullSequence[idx]);
+                if (sim >= reuseThreshold)
+                    return idx;
+            }
+        }
+
+        // Search for highly similar tensors (for cross-tree pollination)
+        // Check recent entries for efficiency
+        for (int i = fullSequence.Count - 1; i >= Math.Max(0, fullSequence.Count - 1000); i--)
+        {
+            float sim = tensor.CosineSimilarityQuantized(fullSequence[i]);
+            if (sim >= reuseThreshold)
+                return i;
+        }
+
+        return -1;
+    }
 
     public void LearnWithOutcome(Tensor[] sequence, float outcome)
     {
         if (sequence == null || sequence.Length == 0) return;
+
+        // NEW: Update delta state with sequence
+        if (useDeltaRegression)
+        {
+            UpdateDeltaStateWithSequence(sequence);
+        }
 
         if (useExperienceReplay)
         {
@@ -277,6 +605,33 @@ public class TensorSequenceTree
         }
 
         LearnInternal(sequence, outcome);
+    }
+
+    /// <summary>
+    /// NEW: Update delta state with observed sequence (like RNN state update)
+    /// </summary>
+    private void UpdateDeltaStateWithSequence(Tensor[] sequence)
+    {
+        if (sequence == null || sequence.Length == 0) return;
+
+        // Initialize delta state if needed
+        if (deltaState == null && sequence.Length > 0)
+        {
+            deltaState = new DeltaState(sequence[0].Size);
+        }
+
+        // Update delta state with each tensor in sequence
+        foreach (var tensor in sequence)
+        {
+            deltaState.Update(tensor);
+
+            // Store snapshot in history for pattern analysis
+            if (deltaHistory.Count >= maxDeltaHistorySize)
+            {
+                deltaHistory.RemoveAt(0);
+            }
+            deltaHistory.Add(deltaState.Clone());
+        }
     }
 
     private void LearnInternal(Tensor[] sequence, float outcomeWeight)
@@ -303,34 +658,111 @@ public class TensorSequenceTree
             positionWeights[i] = progressWeight * Math.Abs(outcomeWeight);
         }
 
-        // OPTIMIZED: Convert to quantized tensors and store indices
-        int baseIndex = fullSequence.Count;
-        List<int> sequenceIndices = new List<int>();
+        // NEW: Find where this sequence fits in existing data
+        var (matchIndex, matchLength, isCompletelyNew) = FindSequenceMatch(sequence);
 
-        foreach (var tensor in sequence)
+        List<int> sequenceIndices = new List<int>();
+        int baseIndex = 0;
+
+        if (isCompletelyNew)
         {
-            var quantized = QuantizedTensor.FromTensor(tensor);
-            fullSequence.Add(quantized);
-            int hash = ComputeTensorHash(quantized);
-            tensorHashIndex[hash] = fullSequence.Count - 1;
-            sequenceIndices.Add(fullSequence.Count - 1);
+            // Completely new sequence: add to the end (will be managed by rolling window)
+            baseIndex = fullSequence.Count;
+
+            foreach (var tensor in sequence)
+            {
+                var quantized = QuantizedTensor.FromTensor(tensor);
+
+                // NEW: Try to reuse existing tensor for cross-tree pollination
+                int existingIndex = FindOrReuseTensorIndex(quantized, similarityThreshold);
+
+                if (existingIndex >= 0)
+                {
+                    // Reuse existing tensor (creates graph connections)
+                    sequenceIndices.Add(existingIndex);
+                }
+                else
+                {
+                    // Add new tensor
+                    fullSequence.Add(quantized);
+                    int hash = ComputeTensorHash(quantized);
+                    tensorHashIndex[hash] = fullSequence.Count - 1;
+                    sequenceIndices.Add(fullSequence.Count - 1);
+                }
+            }
+        }
+        else
+        {
+            // Sequence matches existing data: insert where it fits
+            baseIndex = matchIndex;
+
+            // For matching portion, reuse existing indices
+            for (int i = 0; i < matchLength; i++)
+            {
+                sequenceIndices.Add(matchIndex + i);
+            }
+
+            // For non-matching portion, add new tensors after the match
+            for (int i = matchLength; i < sequence.Length; i++)
+            {
+                var quantized = QuantizedTensor.FromTensor(sequence[i]);
+
+                // NEW: Try to reuse existing tensor for cross-tree pollination
+                int existingIndex = FindOrReuseTensorIndex(quantized, similarityThreshold);
+
+                if (existingIndex >= 0)
+                {
+                    sequenceIndices.Add(existingIndex);
+                }
+                else
+                {
+                    // Insert after the matching portion
+                    int insertPos = matchIndex + matchLength + (i - matchLength);
+
+                    if (insertPos < fullSequence.Count)
+                    {
+                        // Insert in the middle
+                        fullSequence.Insert(insertPos, quantized);
+
+                        // Update all indices that come after insertion point
+                        UpdateAllIndicesAfterInsertion(insertPos, 1);
+
+                        sequenceIndices.Add(insertPos);
+                    }
+                    else
+                    {
+                        // Append to end
+                        fullSequence.Add(quantized);
+                        sequenceIndices.Add(fullSequence.Count - 1);
+                    }
+
+                    int hash = ComputeTensorHash(quantized);
+                    tensorHashIndex[hash] = sequenceIndices[sequenceIndices.Count - 1];
+                }
+            }
         }
 
+        // Handle rolling window with index updates
+        int toRemove = 0;
         if (fullSequence.Count > MAX_SEQUENCE_LENGTH)
         {
-            int toRemove = fullSequence.Count - MAX_SEQUENCE_LENGTH;
+            toRemove = fullSequence.Count - MAX_SEQUENCE_LENGTH;
             fullSequence.RemoveRange(0, toRemove);
-            RebuildTensorHashIndex();
-            baseIndex = Math.Max(0, fullSequence.Count - sequence.Length);
 
+            UpdateAllIndicesAfterRemoval(toRemove);
+            UpdateNGramIndicesAfterRemoval(toRemove);
+            RebuildTensorHashIndex();
+
+            baseIndex = Math.Max(0, baseIndex - toRemove);
             for (int i = 0; i < sequenceIndices.Count; i++)
             {
-                sequenceIndices[i] -= toRemove;
+                sequenceIndices[i] = Math.Max(0, sequenceIndices[i] - toRemove);
             }
         }
 
         float temporalWeight = GetTemporalWeight();
 
+        // Record transitions (creates graph structure with cross-connections)
         for (int i = 0; i < sequenceIndices.Count - 1; i++)
         {
             int currentIdx = sequenceIndices[i];
@@ -341,6 +773,7 @@ public class TensorSequenceTree
             int nodeIndex = FindOrCreateNode(currentIdx);
             if (nodeIndex >= 0)
             {
+                // This naturally creates graph connections when multiple paths lead to same node
                 nodes[nodeIndex].RecordNext(nextIdx, combinedWeight);
             }
             transitionCounter++;
@@ -349,6 +782,129 @@ public class TensorSequenceTree
         FindOrCreateNode(sequenceIndices[sequenceIndices.Count - 1]);
         BuildNGramsFromIndices(sequenceIndices, baseIndex, temporalWeight * Math.Abs(outcomeWeight));
         PruneIfNeeded();
+    }
+
+    // NEW: Method to update all indices after insertion
+    private void UpdateAllIndicesAfterInsertion(int insertPos, int insertCount)
+    {
+        // Update all nodes
+        foreach (var node in nodes)
+        {
+            if (node.SequenceIndex >= insertPos)
+            {
+                node.SequenceIndex += insertCount;
+            }
+
+            // Update next indices
+            var nextIndices = node.GetNextIndices();
+            var updatedNextIndices = new Dictionary<int, float>();
+
+            foreach (var kvp in nextIndices)
+            {
+                int newIndex = kvp.Key >= insertPos ? kvp.Key + insertCount : kvp.Key;
+                updatedNextIndices[newIndex] = kvp.Value;
+            }
+
+            // Clear and rebuild next indices
+            foreach (var kvp in updatedNextIndices)
+            {
+                node.RecordNext(kvp.Key, kvp.Value);
+            }
+        }
+
+        // Update n-grams
+        foreach (var n in nGrams.Keys.ToList())
+        {
+            var updatedEntries = new List<(List<int> contextIndices, Dictionary<int, float> nextIndices)>();
+
+            foreach (var entry in nGrams[n])
+            {
+                var updatedContextIndices = entry.contextIndices.Select(idx => idx >= insertPos ? idx + insertCount : idx).ToList();
+
+                var updatedNextIndices = new Dictionary<int, float>();
+                foreach (var kvp in entry.nextIndices)
+                {
+                    int newNextIndex = kvp.Key >= insertPos ? kvp.Key + insertCount : kvp.Key;
+                    updatedNextIndices[newNextIndex] = kvp.Value;
+                }
+
+                updatedEntries.Add((updatedContextIndices, updatedNextIndices));
+            }
+
+            nGrams[n] = updatedEntries;
+
+            // Rebuild hash index
+            nGramHashIndex[n].Clear();
+            for (int i = 0; i < updatedEntries.Count; i++)
+            {
+                int hash = ComputeContextHashFromIndices(updatedEntries[i].contextIndices);
+                nGramHashIndex[n][hash] = i;
+            }
+        }
+    }
+
+    // FIXED: New method to update all node indices after removal
+    private void UpdateAllIndicesAfterRemoval(int removedCount)
+    {
+        // Update all nodes
+        for (int i = nodes.Count - 1; i >= 0; i--)
+        {
+            nodes[i].UpdateIndicesAfterRemoval(removedCount);
+
+            // Remove nodes that are no longer valid
+            if (!nodes[i].IsValid(fullSequence.Count))
+            {
+                nodes.RemoveAt(i);
+            }
+        }
+    }
+
+    // FIXED: New method to update all n-gram indices after removal
+    private void UpdateNGramIndicesAfterRemoval(int removedCount)
+    {
+        foreach (var n in nGrams.Keys.ToList())
+        {
+            var updatedEntries = new List<(List<int> contextIndices, Dictionary<int, float> nextIndices)>();
+
+            foreach (var entry in nGrams[n])
+            {
+                // Update context indices
+                var updatedContextIndices = entry.contextIndices.Select(idx => idx - removedCount).ToList();
+
+                // Check if all context indices are still valid
+                bool contextValid = updatedContextIndices.All(idx => idx >= 0 && idx < fullSequence.Count);
+
+                if (!contextValid)
+                    continue;
+
+                // Update next indices
+                var updatedNextIndices = new Dictionary<int, float>();
+                foreach (var kvp in entry.nextIndices)
+                {
+                    int newNextIndex = kvp.Key - removedCount;
+                    if (newNextIndex >= 0 && newNextIndex < fullSequence.Count)
+                    {
+                        updatedNextIndices[newNextIndex] = kvp.Value;
+                    }
+                }
+
+                // Only keep entries with valid next indices
+                if (updatedNextIndices.Count > 0)
+                {
+                    updatedEntries.Add((updatedContextIndices, updatedNextIndices));
+                }
+            }
+
+            nGrams[n] = updatedEntries;
+
+            // Rebuild hash index for this n
+            nGramHashIndex[n].Clear();
+            for (int i = 0; i < updatedEntries.Count; i++)
+            {
+                int hash = ComputeContextHashFromIndices(updatedEntries[i].contextIndices);
+                nGramHashIndex[n][hash] = i;
+            }
+        }
     }
 
     public void Learn(Tensor[] sequence)
@@ -496,6 +1052,244 @@ public class TensorSequenceTree
         }
 
         return predictions.ToArray();
+    }
+
+    // ===============================================================================
+    // NEW: DELTA REGRESSION PREDICTION METHODS
+    // ===============================================================================
+
+    /// <summary>
+    /// Predict next tensor using delta (velocity/acceleration) extrapolation
+    /// Similar to how RNNs propagate hidden states forward
+    /// </summary>
+    public Tensor PredictNextDelta(Tensor[] context, int stepsAhead = 1, bool useAcceleration = true, float dampingFactor = 0.95f)
+    {
+        if (!useDeltaRegression || deltaState == null || context == null || context.Length == 0)
+            return null;
+
+        // Update delta state with current context
+        foreach (var tensor in context)
+        {
+            deltaState.Update(tensor);
+        }
+
+        return deltaState.PredictNext(stepsAhead, useAcceleration, dampingFactor);
+    }
+
+    /// <summary>
+    /// Predict using smoothed exponential moving average (more stable)
+    /// </summary>
+    public Tensor PredictNextDeltaSmoothed(Tensor[] context, int stepsAhead = 1, float dampingFactor = 0.95f)
+    {
+        if (!useDeltaRegression || deltaState == null || context == null || context.Length == 0)
+            return null;
+
+        foreach (var tensor in context)
+        {
+            deltaState.Update(tensor);
+        }
+
+        return deltaState.PredictNextSmoothed(stepsAhead, dampingFactor);
+    }
+
+    /// <summary>
+    /// Predict multiple steps ahead using delta regression (recurrent extrapolation)
+    /// </summary>
+    public Tensor[] PredictMultipleDelta(Tensor[] context, int count = 1, bool useAcceleration = true, float dampingFactor = 0.95f)
+    {
+        if (!useDeltaRegression || count <= 0 || context == null || context.Length == 0)
+            return new Tensor[0];
+
+        List<Tensor> predictions = new List<Tensor>();
+
+        // Initialize with context
+        foreach (var tensor in context)
+        {
+            deltaState.Update(tensor);
+        }
+
+        // Generate predictions
+        for (int i = 0; i < count; i++)
+        {
+            Tensor prediction = deltaState.PredictNext(1, useAcceleration, dampingFactor);
+            if (prediction == null) break;
+
+            predictions.Add(prediction);
+
+            // Update state with prediction for next iteration (autoregressive)
+            deltaState.Update(prediction);
+        }
+
+        return predictions.ToArray();
+    }
+
+    /// <summary>
+    /// Hybrid prediction: blend traditional retrieval with delta extrapolation
+    /// Similar to ensemble methods in ML
+    /// </summary>
+    public Tensor PredictNextHybridDelta(Tensor[] context, float deltaWeight = 0.4f, bool useAcceleration = true)
+    {
+        if (context == null || context.Length == 0) return null;
+
+        // Get retrieval-based prediction
+        var retrievalPredictions = PredictNext(context, 1, useBlending: false, useStochastic: false);
+        Tensor retrievalPred = (retrievalPredictions != null && retrievalPredictions.Length > 0)
+            ? retrievalPredictions[0]
+            : null;
+
+        // Get delta-based prediction
+        Tensor deltaPred = useDeltaRegression
+            ? PredictNextDelta(context, 1, useAcceleration)
+            : null;
+
+        // Blend predictions
+        if (retrievalPred != null && deltaPred != null)
+        {
+            Tensor blended = new Tensor(retrievalPred.Size);
+            float retrievalWeight = 1.0f - deltaWeight;
+
+            for (int i = 0; i < retrievalPred.Size; i++)
+            {
+                blended.Data[i] = retrievalPred.Data[i] * retrievalWeight +
+                                 deltaPred.Data[i] * deltaWeight;
+            }
+
+            return blended;
+        }
+        else if (retrievalPred != null)
+        {
+            return retrievalPred;
+        }
+        else if (deltaPred != null)
+        {
+            return deltaPred;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Ensemble prediction: generate multiple predictions using different methods
+    /// Returns weighted average based on prediction confidence
+    /// </summary>
+    public Tensor PredictNextEnsemble(Tensor[] context, bool includeRegression = true, bool includeDelta = true)
+    {
+        if (context == null || context.Length == 0) return null;
+
+        var predictions = new List<(Tensor tensor, float weight)>();
+
+        // Retrieval-based prediction (weight based on match quality)
+        var retrievalPreds = PredictNext(context, 1, useBlending: false, useStochastic: false);
+        if (retrievalPreds != null && retrievalPreds.Length > 0)
+        {
+            predictions.Add((retrievalPreds[0], 0.35f));
+        }
+
+        // Regression-based prediction
+        if (includeRegression)
+        {
+            var regressionPred = PredictNextRegression(context, noveltyBias: 0.1f);
+            if (regressionPred != null)
+            {
+                predictions.Add((regressionPred, 0.30f));
+            }
+        }
+
+        // Delta-based prediction (weight by confidence)
+        if (includeDelta && useDeltaRegression && deltaState != null)
+        {
+            var deltaPred = PredictNextDelta(context, 1, useAcceleration: true);
+            if (deltaPred != null)
+            {
+                float confidence = deltaState.GetPredictionConfidence();
+                predictions.Add((deltaPred, 0.25f * confidence));
+            }
+        }
+
+        // Trend-based regression
+        if (context.Length >= 2)
+        {
+            var trendPred = PredictNextRegressionWithTrend(context, trendWeight: 0.5f, noveltyBias: 0.05f);
+            if (trendPred != null)
+            {
+                predictions.Add((trendPred, 0.10f));
+            }
+        }
+
+        if (predictions.Count == 0) return null;
+
+        // Normalize weights
+        float totalWeight = predictions.Sum(p => p.weight);
+        if (totalWeight == 0) return null;
+
+        // Create weighted ensemble
+        Tensor ensemble = new Tensor(tensorSize);
+        Array.Fill(ensemble.Data, 0f);
+
+        foreach (var (tensor, weight) in predictions)
+        {
+            float normalizedWeight = weight / totalWeight;
+            for (int i = 0; i < tensorSize; i++)
+            {
+                ensemble.Data[i] += tensor.Data[i] * normalizedWeight;
+            }
+        }
+
+        return ensemble;
+    }
+
+    /// <summary>
+    /// Get prediction confidence based on delta state stability
+    /// Returns 0-1 confidence score
+    /// </summary>
+    public float GetDeltaPredictionConfidence()
+    {
+        if (!useDeltaRegression || deltaState == null) return 0.5f;
+        return deltaState.GetPredictionConfidence();
+    }
+
+    /// <summary>
+    /// Analyze velocity patterns in delta history
+    /// Returns average velocity magnitude and trend direction
+    /// </summary>
+    public (float avgVelocity, float trendDirection) AnalyzeDeltaTrends()
+    {
+        if (!useDeltaRegression || deltaHistory.Count < 2)
+            return (0f, 0f);
+
+        float totalVelocity = 0f;
+        float trendSum = 0f;
+
+        for (int i = 0; i < deltaHistory.Count; i++)
+        {
+            var state = deltaHistory[i];
+            float velMag = 0f;
+
+            for (int j = 0; j < state.Velocity.Size; j++)
+            {
+                velMag += Math.Abs(state.Velocity.Data[j]);
+            }
+
+            totalVelocity += velMag / state.Velocity.Size;
+
+            // Trend: positive if velocities are increasing, negative if decreasing
+            if (i > 0)
+            {
+                float prevVelMag = 0f;
+                for (int j = 0; j < deltaHistory[i-1].Velocity.Size; j++)
+                {
+                    prevVelMag += Math.Abs(deltaHistory[i-1].Velocity.Data[j]);
+                }
+                prevVelMag /= deltaHistory[i-1].Velocity.Size;
+
+                trendSum += (velMag - prevVelMag);
+            }
+        }
+
+        float avgVelocity = totalVelocity / deltaHistory.Count;
+        float trendDirection = deltaHistory.Count > 1 ? trendSum / (deltaHistory.Count - 1) : 0f;
+
+        return (avgVelocity, trendDirection);
     }
 
     /// <summary>
@@ -824,7 +1618,7 @@ public class TensorSequenceTree
     /// Predict multiple next tensors using regression
     /// Each prediction builds on the previous regressed tensors
     /// </summary>
-    public Tensor[] PredictNextRegression(Tensor[] context, int count = 1, float noveltyBias = 0.2f)
+    public Tensor[] PredictMultipleRegression(Tensor[] context, int count = 1, float noveltyBias = 0.2f)
     {
         if (context == null || context.Length == 0 || count <= 0)
             return new Tensor[0];
@@ -1195,6 +1989,7 @@ public class TensorSequenceTree
         sb.AppendLine($"Unique tensor nodes: {nodes.Count} / {MAX_NODES} max");
         sb.AppendLine($"Tensor size: {tensorSize}");
         sb.AppendLine($"Quantization: {(useQuantization ? "Enabled" : "Disabled")}");
+        sb.AppendLine($"Delta Regression: {(useDeltaRegression ? "Enabled" : "Disabled")}");
         sb.AppendLine($"Similarity threshold: {similarityThreshold:F3}");
         sb.AppendLine($"Temperature: {temperature:F2}");
         sb.AppendLine($"Exploration rate: {explorationRate:F3}");
@@ -1203,12 +1998,15 @@ public class TensorSequenceTree
         long unquantizedBytes = fullSequence.Count * (tensorSize * 4 + 16);
         long nodeBytes = nodes.Count * 24;
         long ngramBytes = nGrams.Sum(kvp => kvp.Value.Count * (kvp.Key * 4 + 64));
-        long estimatedMemory = quantizedBytes + nodeBytes + ngramBytes;
+        long deltaBytes = useDeltaRegression ? (tensorSize * 4 * 4) + (deltaHistory.Count * tensorSize * 4 * 4) : 0;
+        long estimatedMemory = quantizedBytes + nodeBytes + ngramBytes + deltaBytes;
 
         sb.AppendLine($"\nMemory (optimized): {estimatedMemory / 1024.0 / 1024.0:F2} MB");
         sb.AppendLine($"  FullSequence: {quantizedBytes / 1024.0 / 1024.0:F2} MB");
         sb.AppendLine($"  Nodes: {nodeBytes / 1024.0 / 1024.0:F2} MB");
         sb.AppendLine($"  N-grams: {ngramBytes / 1024.0 / 1024.0:F2} MB");
+        if (useDeltaRegression)
+            sb.AppendLine($"  Delta States: {deltaBytes / 1024.0 / 1024.0:F2} MB");
 
         if (useQuantization)
         {
@@ -1216,7 +2014,52 @@ public class TensorSequenceTree
             sb.AppendLine($"\nSavings from quantization: ~{savings:F1}%");
         }
 
+        // Graph statistics
+        int totalTransitions = nodes.Sum(n => n.GetNextIndices().Count);
+        int sharedDestinations = CountSharedDestinations();
+        sb.AppendLine($"\nGraph Statistics:");
+        sb.AppendLine($"  Total transitions: {totalTransitions}");
+        sb.AppendLine($"  Shared destinations (cross-pollination): {sharedDestinations}");
+
+        // Delta regression statistics
+        if (useDeltaRegression && deltaState != null)
+        {
+            sb.AppendLine($"\nDelta Regression Statistics:");
+            sb.AppendLine($"  Step count: {deltaState.StepCount}");
+            sb.AppendLine($"  Prediction confidence: {deltaState.GetPredictionConfidence():F3}");
+            sb.AppendLine($"  Delta history size: {deltaHistory.Count}");
+
+            if (deltaHistory.Count >= 2)
+            {
+                var (avgVel, trend) = AnalyzeDeltaTrends();
+                sb.AppendLine($"  Average velocity: {avgVel:F4}");
+                sb.AppendLine($"  Trend direction: {trend:F4}");
+            }
+        }
+
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Count how many tensor indices are pointed to by multiple different nodes
+    /// This indicates the level of cross-tree pollination (graph connectivity)
+    /// </summary>
+    private int CountSharedDestinations()
+    {
+        var destinationSources = new Dictionary<int, HashSet<int>>();
+
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            var nextIndices = nodes[i].GetNextIndices();
+            foreach (var destIdx in nextIndices.Keys)
+            {
+                if (!destinationSources.ContainsKey(destIdx))
+                    destinationSources[destIdx] = new HashSet<int>();
+                destinationSources[destIdx].Add(i);
+            }
+        }
+
+        return destinationSources.Count(kvp => kvp.Value.Count > 1);
     }
 
     private int ComputeTensorHash(QuantizedTensor tensor)
@@ -1269,6 +2112,79 @@ public class TensorSequenceTree
         }
     }
 
+    /// <summary>
+    /// Learn from multiple sequences in a batch with improved efficiency
+    /// </summary>
+    public void LearnBatch(List<(Tensor[] sequence, float outcome)> batch)
+    {
+        if (batch == null || batch.Count == 0) return;
+
+        foreach (var (sequence, outcome) in batch)
+        {
+            LearnWithOutcome(sequence, outcome);
+        }
+
+        // Perform batch optimization if using experience replay
+        if (useExperienceReplay && experienceBuffer.Count >= 16)
+        {
+            ReplayExperiences(batchSize: 16, epochs: 1);
+        }
+    }
+
+    /// <summary>
+    /// Replay experiences from buffer with prioritization
+    /// </summary>
+    public void ReplayExperiences(int batchSize = 32, int epochs = 1)
+    {
+        if (!useExperienceReplay || experienceBuffer.Count == 0) return;
+
+        for (int epoch = 0; epoch < epochs; epoch++)
+        {
+            // Sample prioritized batch
+            var batch = SamplePrioritizedBatch(batchSize);
+
+            foreach (var (sequence, outcome, _) in batch)
+            {
+                LearnInternal(sequence, outcome * 0.5f); // Reduced weight for replay to avoid overfitting
+            }
+        }
+    }
+
+    private List<(Tensor[] sequence, float outcome, long timestamp)> SamplePrioritizedBatch(int batchSize)
+    {
+        if (experienceBuffer.Count <= batchSize)
+            return experienceBuffer.ToList();
+
+        // Prioritized sampling: higher probability for high-outcome experiences
+        var priorities = experienceBuffer.Select(exp =>
+        {
+            float outcomePriority = Math.Abs(exp.outcome) + 0.1f; // Boost extreme outcomes
+            float recencyPriority = 1.0f + (exp.timestamp / (float)transitionCounter) * 0.5f; // Boost recent
+            return outcomePriority * recencyPriority;
+        }).ToArray();
+
+        float totalPriority = priorities.Sum();
+        var batch = new List<(Tensor[], float, long)>();
+
+        for (int i = 0; i < batchSize; i++)
+        {
+            float rand = (float)random.NextDouble() * totalPriority;
+            float cumulative = 0;
+
+            for (int j = 0; j < experienceBuffer.Count; j++)
+            {
+                cumulative += priorities[j];
+                if (rand <= cumulative)
+                {
+                    batch.Add(experienceBuffer[j]);
+                    break;
+                }
+            }
+        }
+
+        return batch;
+    }
+
     public void Clear()
     {
         nodes.Clear();
@@ -1280,6 +2196,8 @@ public class TensorSequenceTree
         nGramHashIndex.Clear();
         tensorHashIndex.Clear();
         experienceBuffer.Clear();
+        deltaHistory.Clear();
+        deltaState = null;
         tensorSize = 0;
         transitionCounter = 0;
         similarityThreshold = baseSimilarityThreshold;
@@ -1289,4 +2207,17 @@ public class TensorSequenceTree
     public void SetExplorationRate(float rate) => explorationRate = Math.Clamp(rate, 0f, 1f);
     public float GetTemperature() => temperature;
     public float GetExplorationRate() => explorationRate;
+
+    // NEW: Delta regression configuration
+    public void SetDeltaMomentum(float momentum)
+    {
+        if (deltaState != null)
+            deltaState.Momentum = Math.Clamp(momentum, 0f, 1f);
+    }
+
+    public void SetDeltaSmoothingFactor(float alpha)
+    {
+        if (deltaState != null)
+            deltaState.SmoothingFactor = Math.Clamp(alpha, 0f, 1f);
+    }
 }

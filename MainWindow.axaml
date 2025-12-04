@@ -78,15 +78,16 @@
             <ColumnDefinition Width="280"/>
         </Grid.ColumnDefinitions>
 
-        <!-- Main Image Display Area (95% of space) -->
+        <!-- Main Terrain Editing Area -->
         <Border Grid.Column="0" Background="#1E1E1E" Padding="10">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- Top Bar with Quick Actions -->
+                <!-- Top Toolbar -->
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
                     <Button Name="GenerateButton" 
                             Content="⚡ Generate" 
@@ -388,6 +389,7 @@
                         </StackPanel>
                     </Border>
 
+
                     <!-- Image Upscaling with repliKate -->
                     <Border Classes="control-group">
                         <StackPanel>
@@ -412,9 +414,11 @@
                             <ComboBox Name="UpscaleFactorCombo"
                                     SelectedIndex="0"
                                     Margin="0,0,0,8">
+                                <ComboBoxItem Content="1x (1x Resolution)"/>
                                 <ComboBoxItem Content="2x (Double Resolution)"/>
                                 <ComboBoxItem Content="3x (Triple Resolution)"/>
                                 <ComboBoxItem Content="4x (Quadruple Resolution)"/>
+                                <ComboBoxItem Content="8x (8k Resolution)"/>
                             </ComboBox>
 
                             <Button Name="UpscaleImageButton" 
