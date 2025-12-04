@@ -431,6 +431,16 @@
                                 </ToolTip.Tip>
                             </CheckBox>
 
+                            <CheckBox Name="WfcPcgModeCheckBox"
+                                      Content="⚡ WFC PCG Mode"
+                                      IsChecked="False"
+                                      VerticalAlignment="Center"
+                                      Margin="0,0,0,8">
+                                <ToolTip.Tip>
+                                    ESRGAN-style detail generation using Wave Function Collapse PCG. Trains on the input image and generates coherent detail patterns for superior upscaling quality.
+                                </ToolTip.Tip>
+                            </CheckBox>
+
                             <Button Name="UpscaleImageButton" 
                                   Content="🚀 Upscale with repliKate" 
                                   Click="UpscaleImageButton_Click"

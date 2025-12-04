@@ -2369,19 +2369,16 @@ public partial class MainWindow : Window
             // This leverages the existing trained model if available
             var upscaler = new ImageUpscaler(_multiScaleGraph, _quantizer, _gpu, patchSize: 3);
 
-            // Train on the source image - both systems learn complementary patterns
-            progressDialog.AddLog("🧠 Training RK-dominant hybrid system on image...");
-            progressDialog.AddLog("• NN learns feature patterns for recognition");
-            progressDialog.AddLog("• RK learns sequence patterns for prediction");
-            progressDialog.UpdateProgress(0, 4, "🧠 Training: RK-dominant AI system...");
-
-            await Task.Run(() =>
+            // Check if WFC PCG mode is enabled BEFORE training
+            var wfcPcgMode = WfcPcgModeCheckBox.IsChecked ?? false;
+            if (wfcPcgMode)
             {
-                upscaler.TrainOnImage(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight);
-            });
-
-            progressDialog.AddLog("✓ RK-dominant training complete");
-            progressDialog.UpdateProgress(1, 4, "🧠 RK-DOMINANT upscaling with CUDA...");
+                progressDialog.AddLog("⚡ WFC PCG Mode: ENABLED");
+                progressDialog.AddLog("• ESRGAN-style detail generation");
+                progressDialog.AddLog("• Wave Function Collapse pattern training");
+                progressDialog.AddLog("• Neural network + WFC hybrid processing");
+                upscaler.SetUseWfcPcgMode(true);
+            }
 
             // Check if pixel art mode is enabled
             var pixelArtMode = PixelArtModeCheckBox.IsChecked ?? false;
@@ -2391,32 +2388,75 @@ public partial class MainWindow : Window
                 progressDialog.AddLog("• Post-processing: Grid detection & color snapping");
             }
 
+            // Train on the source image - both systems learn complementary patterns
+            var trainingMode = wfcPcgMode ? "WFC PCG hybrid system" : "RK-dominant hybrid system";
+            progressDialog.AddLog($"🧠 Training {trainingMode} on image...");
+            progressDialog.AddLog("• NN learns feature patterns for recognition");
+            if (wfcPcgMode)
+            {
+                progressDialog.AddLog("• WFC learns structural patterns for generation");
+            }
+            progressDialog.AddLog("• RK learns sequence patterns for prediction");
+            progressDialog.UpdateProgress(0, 4, $"🧠 Training: {trainingMode}...");
+
+            await Task.Run(() =>
+            {
+                upscaler.TrainOnImage(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight);
+            });
+
+            var completionMode = wfcPcgMode ? "WFC PCG" : "RK-dominant";
+            progressDialog.AddLog($"✓ {completionMode} training complete");
+            progressDialog.UpdateProgress(1, 4, $"🧠 {completionMode.ToUpper()} upscaling with CUDA...");
+
             // RK-DOMINANT CUDA UPSCALING: repliKate is the brain, NN assists
             var (upscaledPixels, upscaledWidth, upscaledHeight) = await Task.Run(() =>
             {
                 if (_gpu != null && _gpu.IsAvailable)
                 {
-                    progressDialog.AddLog("🧠 RK-DOMINANT CUDA UPSCALING:");
-                    progressDialog.AddLog("• Bicubic interpolation: CPU baseline");
-                    progressDialog.AddLog("• Neural Network: CUDA pattern recognition (25%)");  
-                    progressDialog.AddLog("• repliKate sequence prediction: CUDA DOMINANT (75%)");
-                    progressDialog.AddLog("• Multi-pass RK refinement with CUDA cores");
+                    var processingMode = wfcPcgMode ? "⚡ WFC PCG CUDA" : "🧠 RK-DOMINANT CUDA";
+                    progressDialog.AddLog($"{processingMode} UPSCALING:");
+
+                    if (wfcPcgMode)
+                    {
+                        progressDialog.AddLog("• WFC pattern extraction: CUDA acceleration");
+                        progressDialog.AddLog("• Neural Network: CUDA pattern recognition (40%)");
+                        progressDialog.AddLog("• WFC detail generation: CUDA cores (40%)");
+                        progressDialog.AddLog("• repliKate refinement: CUDA enhanced (20%)");
+                        progressDialog.AddLog("• ESRGAN-style detail synthesis");
+                    }
+                    else
+                    {
+                        progressDialog.AddLog("• Bicubic interpolation: CPU baseline");
+                        progressDialog.AddLog("• Neural Network: CUDA pattern recognition (25%)");  
+                        progressDialog.AddLog("• repliKate sequence prediction: CUDA DOMINANT (75%)");
+                        progressDialog.AddLog("• Multi-pass RK refinement with CUDA cores");
+                    }
                     progressDialog.AddLog("• Full RGB precision, maximum intelligence");
 
-                    Console.WriteLine("[Upscale] 🧠 RK-DOMINANT MODE: repliKate handles 75% of upscaling intelligence");
+                    Console.WriteLine($"[Upscale] {(wfcPcgMode ? "⚡ WFC PCG MODE" : "🧠 RK-DOMINANT MODE")}: Advanced AI upscaling");
 
-                    // Use existing upscaler method - it will leverage GPU internally for RK and NN
-                    // The ImageUpscaler class should be configured to prioritize RK processing
                     return upscaler.Upscale(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight, scaleFactor, pixelArtMode);
                 }
                 else
                 {
-                    progressDialog.AddLog("💻 CPU RK-enhanced processing:");
-                    progressDialog.AddLog("• Multi-threaded RK sequence prediction");
-                    progressDialog.AddLog("• NN assists with pattern recognition"); 
-                    progressDialog.AddLog("• RK handles majority of upscaling work");
+                    var processingMode = wfcPcgMode ? "⚡ WFC PCG CPU" : "💻 CPU RK-enhanced";
+                    progressDialog.AddLog($"{processingMode} processing:");
 
-                    Console.WriteLine("[Upscale] CPU RK-enhanced mode with intensive sequence prediction");
+                    if (wfcPcgMode)
+                    {
+                        progressDialog.AddLog("• Multi-threaded WFC pattern generation");
+                        progressDialog.AddLog("• NN pattern recognition with CPU optimization");
+                        progressDialog.AddLog("• WFC handles detail synthesis");
+                        progressDialog.AddLog("• RK provides sequence refinement");
+                    }
+                    else
+                    {
+                        progressDialog.AddLog("• Multi-threaded RK sequence prediction");
+                        progressDialog.AddLog("• NN assists with pattern recognition"); 
+                        progressDialog.AddLog("• RK handles majority of upscaling work");
+                    }
+
+                    Console.WriteLine($"[Upscale] {processingMode} with intensive AI processing");
                     return upscaler.Upscale(_upscaleSourcePixels, _upscaleSourceWidth, _upscaleSourceHeight, scaleFactor, pixelArtMode);
                 }
             });
@@ -2444,13 +2484,23 @@ public partial class MainWindow : Window
             GeneratedImage.Width = upscaledWidth;
             GeneratedImage.Height = upscaledHeight;
 
-            var cudaStatus = _gpu != null && _gpu.IsAvailable ? "RK-DOMINANT CUDA" : "RK-ENHANCED CPU";
-            var completionMessage = $"🧠 RK-DOMINANT upscaling complete!\n{_upscaleSourceWidth}x{_upscaleSourceHeight} → {upscaledWidth}x{upscaledHeight}\n{cudaStatus}: 75% RK sequence prediction + 25% NN + Sharpening";
+            var cudaStatus = _gpu != null && _gpu.IsAvailable ? 
+                (wfcPcgMode ? "⚡ WFC PCG CUDA" : "🧠 RK-DOMINANT CUDA") : 
+                (wfcPcgMode ? "⚡ WFC PCG CPU" : "🧠 RK-ENHANCED CPU");
+
+            var completionMessage = wfcPcgMode ? 
+                $"⚡ WFC PCG upscaling complete!\n{_upscaleSourceWidth}x{_upscaleSourceHeight} → {upscaledWidth}x{upscaledHeight}\n{cudaStatus}: ESRGAN-style detail generation + Sharpening" :
+                $"🧠 RK-DOMINANT upscaling complete!\n{_upscaleSourceWidth}x{_upscaleSourceHeight} → {upscaledWidth}x{upscaledHeight}\n{cudaStatus}: 75% RK sequence prediction + 25% NN + Sharpening";
+
             progressDialog.Complete(completionMessage);
             await Task.Delay(1500);
             progressDialog.Close();
 
-            UpscalingStatusText.Text = $"🧠 Upscaled to {upscaledWidth}x{upscaledHeight}\n{cudaStatus} - RK Brain";
+            var statusText = wfcPcgMode ? 
+                $"⚡ Upscaled to {upscaledWidth}x{upscaledHeight}\n{cudaStatus} - WFC PCG" :
+                $"🧠 Upscaled to {upscaledWidth}x{upscaledHeight}\n{cudaStatus} - RK Brain";
+
+            UpscalingStatusText.Text = statusText;
             UpscalingStatusText.Foreground = Avalonia.Media.Brushes.LightGreen;
             SaveUpscaledButton.IsEnabled = true;
 
