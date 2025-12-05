@@ -1,4 +1,4 @@
-# Faithful - Pixel Art Upscaling Done Right
+[# Faithful - Pixel Art Upscaling Done Right
 
 **Preserving Every Pixel, Every Color, Every Detail — Exactly As Intended**
 
@@ -42,11 +42,6 @@ Faithful does **one thing exceptionally well**: it faithfully upscales your imag
 - ❌ Never "improves" with AI creativity
 
 #### Comparison Gallery
-Before
-![pixel-art-pictures-q17pbmcnwpdq4rtu-905848655](https://github.com/user-attachments/assets/80fd0c8d-6372-4f4a-9458-7b8f35e5a505)
-After
-
-<img width="3840" height="2400" alt="upscaled_20251205_032354" src="https://github.com/user-attachments/assets/67034b20-e554-4aa0-b594-5af19734f7a4" />
 
 Before
 
@@ -62,6 +57,15 @@ Before
 After
 
 <img width="900" height="900" alt="upscaled_20251205_023306" src="https://github.com/user-attachments/assets/b5bec9ab-da82-4555-b5de-7b79ccce4326" />
+
+Before
+
+<img width="1920" height="1081" alt="1298880-2021929583" src="https://github.com/user-attachments/assets/ec0bb433-1445-40dd-8d23-6001df697a52" />
+
+After
+
+<img width="15360" height="8641" alt="upscaled_20251205_040612" src="https://github.com/user-attachments/assets/3ca21e7d-1cc7-49c1-b6b8-319183346ec6" />
+
 
 ## What This Actually Does
 
