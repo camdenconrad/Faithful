@@ -421,6 +421,54 @@
                                 <ComboBoxItem Content="8x (8k Resolution)"/>
                             </ComboBox>
 
+                            <TextBlock Classes="label" Text="Training Detail Level" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Slider Name="TrainingDetailLevelSlider"
+                                       Value="2"
+                                       Minimum="1"
+                                       Maximum="4"
+                                       TickFrequency="1"
+                                       IsSnapToTickEnabled="True"
+                                       Width="150"
+                                       VerticalAlignment="Center"/>
+                                <TextBlock Name="TrainingDetailLevelText"
+                                         Text="2x"
+                                         VerticalAlignment="Center"
+                                         Margin="8,0,0,0"
+                                         Width="40"
+                                         Classes="label"/>
+                            </StackPanel>
+                            <TextBlock Classes="label" 
+                                     Text="Higher = More detail extracted from training image"
+                                     FontSize="10"
+                                     TextWrapping="Wrap"
+                                     Margin="0,0,0,8"
+                                     Foreground="#9B9B9B"/>
+
+                            <TextBlock Classes="label" Text="Pixel Art Pre-Scale Threshold" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Slider Name="PixelArtThresholdSlider"
+                                       Value="256"
+                                       Minimum="256"
+                                       Maximum="1024"
+                                       TickFrequency="128"
+                                       IsSnapToTickEnabled="True"
+                                       Width="150"
+                                       VerticalAlignment="Center"/>
+                                <TextBlock Name="PixelArtThresholdText"
+                                         Text="256px"
+                                         VerticalAlignment="Center"
+                                         Margin="8,0,0,0"
+                                         Width="60"
+                                         Classes="label"/>
+                            </StackPanel>
+                            <TextBlock Classes="label" 
+                                     Text="Images smaller than this get nearest-neighbor pre-scaled (pixel art mode only)"
+                                     FontSize="10"
+                                     TextWrapping="Wrap"
+                                     Margin="0,0,0,8"
+                                     Foreground="#9B9B9B"/>
+
                             <CheckBox Name="PixelArtModeCheckBox"
                                       Content="🎨 Pixel Art Mode"
                                       IsChecked="False"

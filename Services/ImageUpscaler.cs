@@ -70,6 +70,12 @@ public class ImageUpscaler
     // Hyper-detailing settings
     private bool _useHyperDetailing = true;
 
+    // Training detail level settings
+    private int _trainingDetailLevel = 2; // 1x = original only, 2x = 2x supersample, 3x = 3x supersample, 4x = 4x supersample
+
+    // Pixel art pre-scaling settings
+    private int _pixelArtPreScaleThreshold = 256; // Minimum dimension before pre-scaling in pixel art mode (256-1024)
+
     // WFC enhancement mode settings - SIMPLIFIED
     private bool _useWfcPcgMode = false;
     private int _wfcPatternSize = 3; // Small for speed
@@ -96,6 +102,7 @@ public class ImageUpscaler
         Console.WriteLine($"[ImageUpscaler] Routing (AGGRESSIVE AI): <{_smoothnessThreshold:F3}→Bilinear, <{_edgeThreshold:F3}→NNImage, ≥{_edgeThreshold:F3}→RepliKate");
         Console.WriteLine($"[ImageUpscaler] Target distribution: ~40% Bilinear, ~50% NNImage, ~10% RepliKate");
         Console.WriteLine($"[ImageUpscaler] NEW: Genuine detail detection & artifact prevention");
+        Console.WriteLine($"[ImageUpscaler] Training detail level: {_trainingDetailLevel}x supersample (adjustable via SetTrainingDetailLevel)");
     }
 
     private void ReportProgress(string stage, int percentage, string message, int current = 0, int total = 0)
@@ -128,28 +135,74 @@ public class ImageUpscaler
             Console.WriteLine($"[ImageUpscaler] ✓ Initialized RepliKate");
         }
 
-        // Train NNImage graph
+        // Train NNImage graph on ORIGINAL image
         if (_nnImageGraph != null && _quantizer != null)
         {
             if (_gpu != null && _gpu.IsAvailable && pixels.Length >= 5000)
             {
-                Console.WriteLine($"[ImageUpscaler] ⚡ GPU training NNImage graph...");
+                Console.WriteLine($"[ImageUpscaler] ⚡ GPU training NNImage graph on original image...");
                 TrainNNImageGraphGpuBulk(pixels, width, height);
             }
             else
             {
-                Console.WriteLine($"[ImageUpscaler] CPU training NNImage graph...");
+                Console.WriteLine($"[ImageUpscaler] CPU training NNImage graph on original image...");
                 TrainNNImageGraphCpuFast(pixels, width, height);
             }
         }
 
-        // Train RepliKate on edge sequences
-        Console.WriteLine($"[ImageUpscaler] ⚡ Training RepliKate on edge sequences...");
-        var sequences = ExtractEdgeSequences(pixels, width, height);
+        // ENHANCED: Train RepliKate on MULTI-DIRECTIONAL edge sequences from ORIGINAL image
+        Console.WriteLine($"[ImageUpscaler] ⚡ Training RepliKate on MULTI-DIRECTIONAL edge sequences (original)...");
+        var sequences = ExtractMultiDirectionalEdgeSequences(pixels, width, height);
 
+        var sequenceCount = 0;
         foreach (var (sequence, quality) in sequences)
         {
             _repliKateModel!.LearnWithOutcome(sequence, quality);
+            sequenceCount++;
+        }
+        Console.WriteLine($"[ImageUpscaler] ✓ Learned {sequenceCount} multi-directional sequences from original image");
+
+        // NEW: Create SUPERSAMPLED version for enhanced training (configurable detail level)
+        if (_trainingDetailLevel > 1)
+        {
+            Console.WriteLine($"[ImageUpscaler] ⚡ Creating {_trainingDetailLevel}x SUPERSAMPLED version for enhanced training...");
+            Console.WriteLine($"[ImageUpscaler] 💡 Higher detail levels extract finer patterns but take longer to train");
+            var supersampleStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            var (supersampledPixels, supersampledWidth, supersampledHeight) = ScaleLanczos(pixels, width, height, _trainingDetailLevel);
+            var supersampleTime = (System.Diagnostics.Stopwatch.GetTimestamp() - supersampleStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+            Console.WriteLine($"[ImageUpscaler] ✓ Created {supersampledWidth}x{supersampledHeight} supersampled image in {supersampleTime:F2}s");
+
+            // Train NNImage on SUPERSAMPLED image for finer details
+            if (_nnImageGraph != null && _quantizer != null)
+            {
+                if (_gpu != null && _gpu.IsAvailable && supersampledPixels.Length >= 5000)
+                {
+                    Console.WriteLine($"[ImageUpscaler] ⚡ GPU training NNImage graph on {_trainingDetailLevel}x SUPERSAMPLED image...");
+                    TrainNNImageGraphGpuBulk(supersampledPixels, supersampledWidth, supersampledHeight);
+                }
+                else
+                {
+                    Console.WriteLine($"[ImageUpscaler] CPU training NNImage graph on {_trainingDetailLevel}x SUPERSAMPLED image...");
+                    TrainNNImageGraphCpuFast(supersampledPixels, supersampledWidth, supersampledHeight);
+                }
+            }
+
+            // Train RepliKate on SUPERSAMPLED sequences for fine detail patterns
+            Console.WriteLine($"[ImageUpscaler] ⚡ Training RepliKate on {_trainingDetailLevel}x SUPERSAMPLED multi-directional sequences...");
+            var supersampledSequences = ExtractMultiDirectionalEdgeSequences(supersampledPixels, supersampledWidth, supersampledHeight);
+
+            var supersampledSequenceCount = 0;
+            var qualityBoost = 1.0f + (_trainingDetailLevel * 0.05f); // Higher detail = higher quality boost
+            foreach (var (sequence, quality) in supersampledSequences)
+            {
+                _repliKateModel!.LearnWithOutcome(sequence, quality * qualityBoost);
+                supersampledSequenceCount++;
+            }
+            Console.WriteLine($"[ImageUpscaler] ✓ Learned {supersampledSequenceCount} multi-directional sequences from {_trainingDetailLevel}x supersampled image");
+        }
+        else
+        {
+            Console.WriteLine($"[ImageUpscaler] ℹ Training detail level set to 1x - skipping supersampled training");
         }
 
         // Initialize fast WFC services if enabled
@@ -253,23 +306,97 @@ public class ImageUpscaler
         Console.WriteLine($"[ImageUpscaler] ✓ Pre-warmed {_nnImageCache.Count:N0} colors in {elapsed:F2}s");
     }
 
-    private List<(Tensor[] sequence, float quality)> ExtractEdgeSequences(uint[] pixels, int width, int height)
+    /// <summary>
+    /// Extract edge sequences in MULTIPLE DIRECTIONS for comprehensive RepliKate training
+    /// Directions: Horizontal, Vertical, Diagonal-Right, Diagonal-Left
+    /// </summary>
+    private List<(Tensor[] sequence, float quality)> ExtractMultiDirectionalEdgeSequences(uint[] pixels, int width, int height)
     {
         var sequences = new ConcurrentBag<(Tensor[], float)>();
         var stride = Math.Max(1, Math.Min(width, height) / 100);
-        var tasks = new List<Task>();
 
-        for (int y = 0; y < height; y += stride)
+        Console.WriteLine($"[ImageUpscaler] Extracting sequences in 4 directions: H, V, D↘, D↙");
+
+        // DIRECTION 1: HORIZONTAL (left-to-right)
+        Parallel.For(0, height / stride, _parallelOptions, i =>
         {
-            var yCopy = y;
-            tasks.Add(Task.Run(() =>
+            var y = i * stride;
+            var sequence = new List<Tensor>();
+
+            for (int x = 0; x < width; x += 2)
             {
-                var sequence = new List<Tensor>();
-                for (int x = 0; x < width; x += 4)
+                if (IsEdgePixel(pixels, width, height, x, y))
                 {
-                    if (IsEdgePixel(pixels, width, height, x, yCopy))
+                    var patch = ExtractPatch(pixels, width, height, x, y);
+                    sequence.Add(patch);
+                }
+            }
+
+            if (sequence.Count >= 5)
+            {
+                var quality = CalculateSequenceQuality(sequence);
+                sequences.Add((sequence.ToArray(), quality * 1.0f)); // Horizontal baseline
+            }
+        });
+
+        // DIRECTION 2: VERTICAL (top-to-bottom)
+        Parallel.For(0, width / stride, _parallelOptions, i =>
+        {
+            var x = i * stride;
+            var sequence = new List<Tensor>();
+
+            for (int y = 0; y < height; y += 2)
+            {
+                if (IsEdgePixel(pixels, width, height, x, y))
+                {
+                    var patch = ExtractPatch(pixels, width, height, x, y);
+                    sequence.Add(patch);
+                }
+            }
+
+            if (sequence.Count >= 5)
+            {
+                var quality = CalculateSequenceQuality(sequence);
+                sequences.Add((sequence.ToArray(), quality * 1.05f)); // Vertical slightly boosted
+            }
+        });
+
+        // DIRECTION 3: DIAGONAL RIGHT (top-left to bottom-right)
+        var maxDiagR = Math.Min(width, height);
+        Parallel.For(0, maxDiagR / stride, _parallelOptions, i =>
+        {
+            var offset = i * stride;
+            var sequence = new List<Tensor>();
+
+            // Start from top edge
+            for (int d = 0; d < Math.Min(height, width - offset); d += 2)
+            {
+                var x = offset + d;
+                var y = d;
+                if (x < width && y < height && IsEdgePixel(pixels, width, height, x, y))
+                {
+                    var patch = ExtractPatch(pixels, width, height, x, y);
+                    sequence.Add(patch);
+                }
+            }
+
+            if (sequence.Count >= 5)
+            {
+                var quality = CalculateSequenceQuality(sequence);
+                sequences.Add((sequence.ToArray(), quality * 1.1f)); // Diagonal boosted (harder patterns)
+            }
+
+            // Start from left edge (avoid double-counting diagonal)
+            if (offset > 0)
+            {
+                sequence = new List<Tensor>();
+                for (int d = 0; d < Math.Min(width, height - offset); d += 2)
+                {
+                    var x = d;
+                    var y = offset + d;
+                    if (x < width && y < height && IsEdgePixel(pixels, width, height, x, y))
                     {
-                        var patch = ExtractPatch(pixels, width, height, x, yCopy);
+                        var patch = ExtractPatch(pixels, width, height, x, y);
                         sequence.Add(patch);
                     }
                 }
@@ -277,14 +404,67 @@ public class ImageUpscaler
                 if (sequence.Count >= 5)
                 {
                     var quality = CalculateSequenceQuality(sequence);
-                    sequences.Add((sequence.ToArray(), quality));
+                    sequences.Add((sequence.ToArray(), quality * 1.1f));
                 }
-            }));
-        }
+            }
+        });
 
-        Task.WaitAll(tasks.ToArray());
-        Console.WriteLine($"[ImageUpscaler] Extracted {sequences.Count} edge sequences");
+        // DIRECTION 4: DIAGONAL LEFT (top-right to bottom-left)
+        Parallel.For(0, maxDiagR / stride, _parallelOptions, i =>
+        {
+            var offset = i * stride;
+            var sequence = new List<Tensor>();
+
+            // Start from top edge
+            for (int d = 0; d < Math.Min(height, offset + 1); d += 2)
+            {
+                var x = offset - d;
+                var y = d;
+                if (x >= 0 && x < width && y < height && IsEdgePixel(pixels, width, height, x, y))
+                {
+                    var patch = ExtractPatch(pixels, width, height, x, y);
+                    sequence.Add(patch);
+                }
+            }
+
+            if (sequence.Count >= 5)
+            {
+                var quality = CalculateSequenceQuality(sequence);
+                sequences.Add((sequence.ToArray(), quality * 1.1f)); // Diagonal boosted
+            }
+
+            // Start from right edge
+            if (offset < width - 1)
+            {
+                sequence = new List<Tensor>();
+                for (int d = 0; d < Math.Min(width - offset, height); d += 2)
+                {
+                    var x = width - 1 - offset - d;
+                    var y = d;
+                    if (x >= 0 && x < width && y < height && IsEdgePixel(pixels, width, height, x, y))
+                    {
+                        var patch = ExtractPatch(pixels, width, height, x, y);
+                        sequence.Add(patch);
+                    }
+                }
+
+                if (sequence.Count >= 5)
+                {
+                    var quality = CalculateSequenceQuality(sequence);
+                    sequences.Add((sequence.ToArray(), quality * 1.1f));
+                }
+            }
+        });
+
+        var totalSequences = sequences.Count;
+        Console.WriteLine($"[ImageUpscaler] Extracted {totalSequences} multi-directional edge sequences");
         return sequences.ToList();
+    }
+
+    // Keep old method for backward compatibility (now just calls new multi-directional version)
+    private List<(Tensor[] sequence, float quality)> ExtractEdgeSequences(uint[] pixels, int width, int height)
+    {
+        return ExtractMultiDirectionalEdgeSequences(pixels, width, height);
     }
 
     private bool IsEdgePixel(uint[] pixels, int width, int height, int x, int y)
@@ -333,39 +513,39 @@ public class ImageUpscaler
             return CleanupOnly(inputPixels, inputWidth, inputHeight);
         }
 
-        // CRITICAL FIX: Pre-scale small images using traditional methods first
-        // Small images (<256px) need to be enlarged with traditional scaling before AI upscaling
-        var minDimension = Math.Min(inputWidth, inputHeight);
-        const int SMALL_IMAGE_THRESHOLD = 1024;
-
-        if (minDimension < SMALL_IMAGE_THRESHOLD)
+        // PIXEL ART MODE ONLY: Pre-scale using nearest-neighbor for sharp edges
+        // Regular photos use AI upscaling directly (trained on supersampled data for quality)
+        if (pixelArtMode)
         {
-            // Calculate how much we need to pre-scale
-            var preScaleFactor = (int)Math.Ceiling((double)SMALL_IMAGE_THRESHOLD / minDimension);
-            preScaleFactor = Math.Min(preScaleFactor, targetScaleFactor); // Don't over-scale
+            var minDimension = Math.Min(inputWidth, inputHeight);
 
-            if (preScaleFactor > 1)
+            if (minDimension < _pixelArtPreScaleThreshold)
             {
-                Console.WriteLine($"[ImageUpscaler] ⚠ SMALL IMAGE DETECTED ({inputWidth}x{inputHeight})");
-                Console.WriteLine($"[ImageUpscaler] ⚡ Pre-scaling {preScaleFactor}x using {(pixelArtMode ? "NEAREST-NEIGHBOR" : "LANCZOS")} for better quality");
+                // Calculate how much we need to pre-scale
+                var preScaleFactor = (int)Math.Ceiling((double)_pixelArtPreScaleThreshold / minDimension);
+                preScaleFactor = Math.Min(preScaleFactor, targetScaleFactor); // Don't over-scale
 
-                // Use nearest-neighbor for pixel art (sharp edges), Lanczos for photos (smooth)
-                var (preScaledPixels, preScaledWidth, preScaledHeight) = pixelArtMode 
-                    ? ScaleNearestNeighbor(inputPixels, inputWidth, inputHeight, preScaleFactor)
-                    : ScaleLanczos(inputPixels, inputWidth, inputHeight, preScaleFactor);
+                if (preScaleFactor > 1)
+                {
+                    Console.WriteLine($"[ImageUpscaler] 🎨 PIXEL ART: Small image detected ({inputWidth}x{inputHeight})");
+                    Console.WriteLine($"[ImageUpscaler] 🎨 Pre-scale threshold: {_pixelArtPreScaleThreshold}px");
+                    Console.WriteLine($"[ImageUpscaler] 🎨 Pre-scaling {preScaleFactor}x using NEAREST-NEIGHBOR for sharp pixel art");
 
-                Console.WriteLine($"[ImageUpscaler] ✓ Pre-scaled to {preScaledWidth}x{preScaledHeight}");
+                    var (preScaledPixels, preScaledWidth, preScaledHeight) = ScaleNearestNeighbor(inputPixels, inputWidth, inputHeight, preScaleFactor);
 
-                // Update input for AI upscaling
-                inputPixels = preScaledPixels;
-                inputWidth = preScaledWidth;
-                inputHeight = preScaledHeight;
+                    Console.WriteLine($"[ImageUpscaler] ✓ Pre-scaled to {preScaledWidth}x{preScaledHeight}");
 
-                // Adjust target scale factor
-                targetScaleFactor = targetScaleFactor / preScaleFactor;
-                if (targetScaleFactor < 1) targetScaleFactor = 1;
+                    // Update input for AI upscaling
+                    inputPixels = preScaledPixels;
+                    inputWidth = preScaledWidth;
+                    inputHeight = preScaledHeight;
 
-                Console.WriteLine($"[ImageUpscaler] ⚡ Remaining AI upscaling: {targetScaleFactor}x");
+                    // Adjust target scale factor
+                    targetScaleFactor = targetScaleFactor / preScaleFactor;
+                    if (targetScaleFactor < 1) targetScaleFactor = 1;
+
+                    Console.WriteLine($"[ImageUpscaler] 🎨 Remaining AI upscaling: {targetScaleFactor}x");
+                }
             }
         }
 
@@ -2491,6 +2671,49 @@ public class ImageUpscaler
     {
         _wfcDetailStrength = Math.Clamp(strength, 0f, 1f);
         Console.WriteLine($"[ImageUpscaler] WFC detail strength set to {_wfcDetailStrength:F2} (blend with NN predictions)");
+    }
+
+    /// <summary>
+    /// Set training detail level - controls how much detail is extracted from training images
+    /// 1x = Train on original only (fastest, less detail)
+    /// 2x = Train on original + 2x supersample (balanced, recommended)
+    /// 3x = Train on original + 3x supersample (high detail, slower)
+    /// 4x = Train on original + 4x supersample (maximum detail, slowest)
+    /// Higher levels extract finer patterns but take longer to train
+    /// </summary>
+    public void SetTrainingDetailLevel(int level)
+    {
+        _trainingDetailLevel = Math.Clamp(level, 1, 4);
+        Console.WriteLine($"[ImageUpscaler] ⚡ Training detail level set to {_trainingDetailLevel}x");
+
+        if (_trainingDetailLevel == 1)
+        {
+            Console.WriteLine($"[ImageUpscaler] Mode: Original only (fastest, suitable for large images)");
+        }
+        else
+        {
+            Console.WriteLine($"[ImageUpscaler] Mode: Original + {_trainingDetailLevel}x supersample (extracts {_trainingDetailLevel}x more detail)");
+            Console.WriteLine($"[ImageUpscaler] 💡 Higher levels capture finer textures and edges");
+
+            if (_trainingDetailLevel >= 3)
+            {
+                Console.WriteLine($"[ImageUpscaler] ⚠ High detail mode - training will take longer");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Set pixel art pre-scale threshold - minimum dimension before nearest-neighbor pre-scaling in pixel art mode
+    /// 256px = Pre-scale very small pixel art (default)
+    /// 512px = Pre-scale medium-small pixel art
+    /// 1024px = Pre-scale anything below 1024px (aggressive)
+    /// Only affects pixel art mode - regular photos skip pre-scaling entirely
+    /// </summary>
+    public void SetPixelArtPreScaleThreshold(int threshold)
+    {
+        _pixelArtPreScaleThreshold = Math.Clamp(threshold, 256, 1024);
+        Console.WriteLine($"[ImageUpscaler] 🎨 Pixel art pre-scale threshold set to {_pixelArtPreScaleThreshold}px");
+        Console.WriteLine($"[ImageUpscaler] Images smaller than {_pixelArtPreScaleThreshold}px will be nearest-neighbor scaled first");
     }
 
     /// <summary>

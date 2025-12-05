@@ -58,6 +58,26 @@ public partial class MainWindow : Window
             }
         };
 
+        // Setup training detail level slider display
+        TrainingDetailLevelSlider.PropertyChanged += (s, e) =>
+        {
+            if (e.Property.Name == "Value")
+            {
+                var level = (int)TrainingDetailLevelSlider.Value;
+                TrainingDetailLevelText.Text = $"{level}x";
+            }
+        };
+
+        // Setup pixel art pre-scale threshold slider display
+        PixelArtThresholdSlider.PropertyChanged += (s, e) =>
+        {
+            if (e.Property.Name == "Value")
+            {
+                var threshold = (int)PixelArtThresholdSlider.Value;
+                PixelArtThresholdText.Text = $"{threshold}px";
+            }
+        };
+
         // Initialize GPU
         try
         {
@@ -2368,6 +2388,16 @@ public partial class MainWindow : Window
             // Create upscaler with access to trained NNImage graph and quantizer
             // This leverages the existing trained model if available
             var upscaler = new ImageUpscaler(_multiScaleGraph, _quantizer, _gpu, patchSize: 3);
+
+            // Apply training detail level from slider
+            var trainingDetailLevel = (int)TrainingDetailLevelSlider.Value;
+            upscaler.SetTrainingDetailLevel(trainingDetailLevel);
+            progressDialog.AddLog($"Training detail level: {trainingDetailLevel}x supersample");
+
+            // Apply pixel art pre-scale threshold from slider
+            var pixelArtThreshold = (int)PixelArtThresholdSlider.Value;
+            upscaler.SetPixelArtPreScaleThreshold(pixelArtThreshold);
+            progressDialog.AddLog($"Pixel art threshold: {pixelArtThreshold}px (pre-scale if smaller)");
 
             // Check if WFC PCG mode is enabled BEFORE training
             var wfcPcgMode = WfcPcgModeCheckBox.IsChecked ?? false;
