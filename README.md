@@ -62,11 +62,13 @@ After
 
 Before
 
-<img width="1920" height="1081" alt="1298880-2021929583" src="https://github.com/user-attachments/assets/ec0bb433-1445-40dd-8d23-6001df697a52" />
+<img width="240" height="150" alt="khyzha-074460" src="https://github.com/user-attachments/assets/a79d5ab7-b034-429d-abe2-7eb6db6e14d6" />
 
-After
 
-<img width="15360" height="8641" alt="upscaled_20251205_040612" src="https://github.com/user-attachments/assets/3ca21e7d-1cc7-49c1-b6b8-319183346ec6" />
+After (Experimental Faithful++ detail addition)
+
+<img width="1920" height="1200" alt="upscaled_20251205_023005" src="https://github.com/user-attachments/assets/03a743d3-48a7-4d1b-a6a0-549c73d402e5" />
+
 
 
 ## What This Actually Does
