@@ -42,6 +42,21 @@ Faithful does **one thing exceptionally well**: it faithfully upscales your imag
 - ❌ Never "improves" with AI creativity
 
 #### Comparison Gallery
+Before
+![pixel-art-pictures-q17pbmcnwpdq4rtu-905848655](https://github.com/user-attachments/assets/80fd0c8d-6372-4f4a-9458-7b8f35e5a505)
+After
+<img width="3840" height="2400" alt="upscaled_20251205_032354" src="https://github.com/user-attachments/assets/67034b20-e554-4aa0-b594-5af19734f7a4" />
+
+Before
+<img width="240" height="150" alt="khyzha-074460" src="https://github.com/user-attachments/assets/e066d8fc-9fc0-4725-865a-23e99b1ff4e6" />
+After
+<img width="1200" height="750" alt="upscaled_20251205_023356" src="https://github.com/user-attachments/assets/b673156a-114a-4c32-86f3-07cff68d18fd" />
+
+Before
+<img width="300" height="300" alt="remember-that-there-are-things-you-cant-control-809245" src="https://github.com/user-attachments/assets/d19dd715-083d-4e83-a0b9-fa6b53629e90" />
+
+After
+<img width="900" height="900" alt="upscaled_20251205_023306" src="https://github.com/user-attachments/assets/b5bec9ab-da82-4555-b5de-7b79ccce4326" />
 
 ## What This Actually Does
 
