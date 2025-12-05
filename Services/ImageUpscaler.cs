@@ -2609,10 +2609,10 @@ public class ImageUpscaler
             }
         }
 
-        public int PatternCount 
-        { 
-            get 
-            { 
+        public int PatternCount
+        {
+            get
+            {
                 try
                 {
                     return _patterns.Values.Where(list => list != null).Sum(list => list.Count);
@@ -2729,7 +2729,7 @@ public class ImageUpscaler
         /// </summary>
         private uint[] ExecuteGpuPatternMatchingKernel(uint[] contextPattern, float noveltyBias)
         {
-            if (_gpuPatternData == null || _gpuPatternIndices == null) 
+            if (_gpuPatternData == null || _gpuPatternIndices == null)
                 return new uint[0];
 
             var patternCount = _gpuPatternIndices.Length;
@@ -2840,7 +2840,7 @@ public class ImageUpscaler
                 WfcPatternMatchingKernel);
 
             // Execute kernel
-            kernel((Index1D)patternCount, contextBuffer.View, patternBuffer.View, scoresBuffer.View, 
+            kernel((Index1D)patternCount, contextBuffer.View, patternBuffer.View, scoresBuffer.View,
                    contextPattern.Length, patternPixelCount);
 
             // Wait for completion
@@ -2887,7 +2887,7 @@ public class ImageUpscaler
         /// <summary>
         /// ILGPU kernel for WFC pattern matching
         /// </summary>
-        private static void WfcPatternMatchingKernel(Index1D index, ArrayView<uint> contextPattern, 
+        private static void WfcPatternMatchingKernel(Index1D index, ArrayView<uint> contextPattern,
             ArrayView<uint> patternData, ArrayView<float> scores, int contextSize, int patternPixelCount)
         {
             var patternIndex = index.X;
@@ -2957,111 +2957,6 @@ public class ImageUpscaler
     }
 
     /// <summary>
-    /// ULTRA-FAST pixel art post-processing with aggressive optimization
-    /// PALETTE-CONSTRAINED: Only uses colors from the original image - never creates new colors
-    /// PERFORMANCE: Pre-computed color mappings + aggressive multithreading for maximum speed
-    /// </summary>
-    private uint[] ApplyPixelArtPostProcessing(uint[] pixels, int width, int height, uint[] originalPixels, int originalWidth, int originalHeight, int scaleFactor)
-    {
-        var startTime = System.Diagnostics.Stopwatch.GetTimestamp();
-        Console.WriteLine($"[ImageUpscaler] ⚡ ULTRA-FAST Pixel Art Mode: Processing {width}x{height} image");
-        Console.WriteLine($"[ImageUpscaler] Original: {originalWidth}x{originalHeight}, Scale: {scaleFactor}x");
-
-        // STEP 1: Extract and REDUCE palette for TRUE pixel art performance
-        var paletteExtractionStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var fullPalette = new HashSet<uint>(originalPixels);
-
-        // CRITICAL: Reduce palette size for pixel art performance (real pixel art has <256 colors)
-        var paletteArray = ReducePaletteForPixelArt(fullPalette, targetColors: 512); // Max 512 colors for speed
-        var paletteExtractionTime = (System.Diagnostics.Stopwatch.GetTimestamp() - paletteExtractionStart) / (double)System.Diagnostics.Stopwatch.Frequency;
-
-        Console.WriteLine($"[ImageUpscaler] ⚡ Reduced palette from {fullPalette.Count} to {paletteArray.Length} colors in {paletteExtractionTime * 1000:F1}ms");
-        Console.WriteLine($"[ImageUpscaler] ✓ PIXEL ART OPTIMIZED: Using {paletteArray.Length} most important colors only");
-
-        // STEP 2: PRE-COMPUTE ULTRA-FAST color lookup table (much faster than cache)
-        var lookupStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var colorLookupTable = BuildUltraFastColorLookupTable(paletteArray);
-        var lookupTime = (System.Diagnostics.Stopwatch.GetTimestamp() - lookupStart) / (double)System.Diagnostics.Stopwatch.Frequency;
-        Console.WriteLine($"[ImageUpscaler] ⚡ Built 256³ color lookup table in {lookupTime * 1000:F1}ms");
-
-        var result = new uint[pixels.Length];
-
-        // Calculate grid size
-        var gridSize = scaleFactor >= 8 ? 4 : scaleFactor >= 4 ? scaleFactor / 2 : scaleFactor;
-        var gridWidth = (width + gridSize - 1) / gridSize;
-        var gridHeight = (height + gridSize - 1) / gridSize;
-        var totalGridCells = gridWidth * gridHeight;
-
-        Console.WriteLine($"[ImageUpscaler] ⚡ Processing {totalGridCells:N0} grid cells ({gridSize}x{gridSize} each) with {_cpuThreadCount} threads");
-
-        // STEP 3: ULTRA-AGGRESSIVE parallel processing with optimized work distribution
-        var processedCells = 0L;
-        var lastReportTime = System.Diagnostics.Stopwatch.GetTimestamp();
-        var reportInterval = (long)(System.Diagnostics.Stopwatch.Frequency * 0.5); // Report every 500ms
-
-        // Use custom partitioning for optimal CPU utilization
-        var cellsPerThread = Math.Max(100, totalGridCells / (_cpuThreadCount * 4)); // More granular work units
-        var partitioner = System.Collections.Concurrent.Partitioner.Create(0, totalGridCells, cellsPerThread);
-
-        Parallel.ForEach(partitioner, new ParallelOptions { MaxDegreeOfParallelism = _cpuThreadCount }, range =>
-        {
-            var localProcessed = 0;
-
-            for (int cellIndex = range.Item1; cellIndex < range.Item2; cellIndex++)
-            {
-                var gridX = cellIndex % gridWidth;
-                var gridY = cellIndex / gridWidth;
-
-                var startX = gridX * gridSize;
-                var startY = gridY * gridSize;
-                var endX = Math.Min(startX + gridSize, width);
-                var endY = Math.Min(startY + gridSize, height);
-
-                // LIGHTNING-FAST palette color selection with lookup table
-                var paletteColor = FindBestPaletteColorLightning(pixels, width, startX, startY, endX, endY, colorLookupTable);
-
-                // Apply color to entire grid cell in tight loop for maximum speed
-                for (int y = startY; y < endY; y++)
-                {
-                    var rowOffset = y * width;
-                    for (int x = startX; x < endX; x++)
-                    {
-                        result[rowOffset + x] = paletteColor;
-                    }
-                }
-
-                localProcessed++;
-            }
-
-            var currentProcessed = Interlocked.Add(ref processedCells, localProcessed);
-
-            // Progress reporting (throttled)
-            var currentTime = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (currentTime - lastReportTime > reportInterval)
-            {
-                if (Interlocked.CompareExchange(ref lastReportTime, currentTime, lastReportTime) == lastReportTime)
-                {
-                    var progress = (currentProcessed * 100) / totalGridCells;
-                    var elapsed = (currentTime - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
-                    var cellsPerSec = currentProcessed / elapsed;
-                    var eta = (totalGridCells - currentProcessed) / cellsPerSec;
-
-                    Console.WriteLine($"[ImageUpscaler] ⚡ {progress}% | {cellsPerSec / 1000:F1}K cells/s | ETA: {eta:F1}s");
-                }
-            }
-        });
-
-        var totalElapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
-        var finalSpeed = totalGridCells / totalElapsed;
-
-        Console.WriteLine($"[ImageUpscaler] ⚡⚡⚡ ULTRA-FAST pixel art complete in {totalElapsed:F2}s!");
-        Console.WriteLine($"[ImageUpscaler] ⚡ Performance: {finalSpeed / 1000:F1}K cells/sec with {_cpuThreadCount} threads");
-        Console.WriteLine($"[ImageUpscaler] ✓ AUTHENTIC: All colors from reduced {paletteArray.Length}-color palette");
-
-        return result;
-    }
-
-    /// <summary>
     /// Reduce palette to pixel art range for MAXIMUM performance
     /// Real pixel art rarely has more than 256 colors - reducing palette gives massive speedup
     /// </summary>
@@ -3082,7 +2977,7 @@ public class ImageUpscaler
         var paletteList = fullPalette.ToList();
 
         // Sort by RGB values to get good distribution
-        paletteList.Sort((a, b) => 
+        paletteList.Sort((a, b) =>
         {
             var aSum = ((a >> 16) & 0xFF) + ((a >> 8) & 0xFF) + (a & 0xFF);
             var bSum = ((b >> 16) & 0xFF) + ((b >> 8) & 0xFF) + (b & 0xFF);
@@ -3104,98 +2999,226 @@ public class ImageUpscaler
     }
 
     /// <summary>
-    /// Build LIGHTNING-FAST color lookup table for instant palette matching
-    /// Pre-computes nearest palette color for common RGB combinations
+    /// Detect the pixel art density (1x1, 2x2, 4x4, 8x8) by analyzing color pattern repetition
+    /// Analyzes how colors are distributed to find the most likely pixel grid size
     /// </summary>
-    private uint[] BuildUltraFastColorLookupTable(uint[] paletteArray)
+    private int DetectPixelArtDensity(uint[] pixels, int width, int height, int scaleFactor)
     {
-        // Build a 64x64x64 lookup table (262K entries) for 6-bit RGB precision
-        // This covers all common colors with lightning-fast O(1) lookup
-        var tableSize = 64;
-        var lookupTable = new uint[tableSize * tableSize * tableSize];
+        Console.WriteLine($"[ImageUpscaler] 🎨 Analyzing color patterns to detect pixel density...");
 
-        Console.WriteLine($"[ImageUpscaler] Building {tableSize}³ = {lookupTable.Length:N0} entry lookup table...");
+        // Test different grid sizes to find the most consistent one
+        var candidateSizes = new[] { 1, 2, 4, 8, 16 }.Where(size => size <= scaleFactor && size <= Math.Min(width, height) / 4).ToArray();
+        var bestSize = 1;
+        var bestConsistency = 0.0;
 
-        Parallel.For(0, lookupTable.Length, new ParallelOptions { MaxDegreeOfParallelism = _cpuThreadCount }, i =>
+        foreach (var gridSize in candidateSizes)
         {
-            // Convert index to RGB (6-bit precision)
-            var b = (i % tableSize) * 4; // Scale 0-63 to 0-252
-            var g = ((i / tableSize) % tableSize) * 4;
-            var r = (i / (tableSize * tableSize)) * 4;
+            var consistency = CalculateGridConsistency(pixels, width, height, gridSize);
+            Console.WriteLine($"[ImageUpscaler] 🎨   Grid {gridSize}x{gridSize}: {consistency:F3} consistency");
 
-            // Find nearest palette color for this RGB
-            var targetColor = 0xFF000000u | ((uint)r << 16) | ((uint)g << 8) | (uint)b;
-
-            uint bestPaletteColor = paletteArray[0];
-            var minDistanceSquared = int.MaxValue;
-
-            foreach (var paletteColor in paletteArray)
+            if (consistency > bestConsistency)
             {
-                var pr = (int)((paletteColor >> 16) & 0xFF);
-                var pg = (int)((paletteColor >> 8) & 0xFF);
-                var pb = (int)(paletteColor & 0xFF);
-
-                var dr = pr - r;
-                var dg = pg - g;
-                var db = pb - b;
-                var distanceSquared = dr * dr + dg * dg + db * db;
-
-                if (distanceSquared < minDistanceSquared)
-                {
-                    minDistanceSquared = distanceSquared;
-                    bestPaletteColor = paletteColor;
-                }
-            }
-
-            lookupTable[i] = bestPaletteColor;
-        });
-
-        Console.WriteLine($"[ImageUpscaler] ✓ Lookup table built - all color matches are now O(1)!");
-        return lookupTable;
-    }
-
-    /// <summary>
-    /// LIGHTNING-FAST palette color selection using pre-computed lookup table
-    /// O(1) color matching - no distance calculations needed!
-    /// </summary>
-    private uint FindBestPaletteColorLightning(uint[] pixels, int width, int startX, int startY, int endX, int endY, uint[] colorLookupTable)
-    {
-        // Fast average color calculation
-        var totalR = 0L;
-        var totalG = 0L;
-        var totalB = 0L;
-        var pixelCount = (endX - startX) * (endY - startY);
-
-        // Optimized sampling: only sample every 2nd pixel for speed in large regions
-        var step = pixelCount > 16 ? 2 : 1;
-
-        for (int y = startY; y < endY; y += step)
-        {
-            var rowOffset = y * width;
-            for (int x = startX; x < endX; x += step)
-            {
-                var pixel = pixels[rowOffset + x];
-                totalR += (pixel >> 16) & 0xFF;
-                totalG += (pixel >> 8) & 0xFF;
-                totalB += pixel & 0xFF;
+                bestConsistency = consistency;
+                bestSize = gridSize;
             }
         }
 
-        var actualPixelCount = ((endY - startY + step - 1) / step) * ((endX - startX + step - 1) / step);
-        if (actualPixelCount == 0) actualPixelCount = 1;
+        // Fallback: if no clear pattern, use scale factor as hint
+        if (bestConsistency < 0.3)
+        {
+            bestSize = scaleFactor >= 8 ? 4 : scaleFactor >= 4 ? 2 : 1;
+            Console.WriteLine($"[ImageUpscaler] 🎨   No clear pattern found, using fallback: {bestSize}x{bestSize}");
+        }
 
-        var avgR = (int)(totalR / actualPixelCount);
-        var avgG = (int)(totalG / actualPixelCount);
-        var avgB = (int)(totalB / actualPixelCount);
-
-        // LIGHTNING-FAST O(1) lookup using pre-computed table
-        var lookupR = Math.Min(avgR / 4, 63); // Convert to 6-bit (0-63)
-        var lookupG = Math.Min(avgG / 4, 63);
-        var lookupB = Math.Min(avgB / 4, 63);
-        var lookupIndex = lookupR * (64 * 64) + lookupG * 64 + lookupB;
-
-        return colorLookupTable[lookupIndex];
+        return bestSize;
     }
+
+    /// <summary>
+    /// Calculate how consistent colors are within grid cells of the given size
+    /// Higher consistency means this grid size better matches the pixel art structure
+    /// </summary>
+    private double CalculateGridConsistency(uint[] pixels, int width, int height, int gridSize)
+    {
+        var totalCells = 0;
+        var consistentCells = 0;
+        var gridWidth = width / gridSize;
+        var gridHeight = height / gridSize;
+
+        // Sample every 4th grid cell for performance (still gives accurate results)
+        var sampleStep = Math.Max(1, Math.Max(gridWidth, gridHeight) / 50);
+
+        for (int gridY = 0; gridY < gridHeight; gridY += sampleStep)
+        {
+            for (int gridX = 0; gridX < gridWidth; gridX += sampleStep)
+            {
+                var startX = gridX * gridSize;
+                var startY = gridY * gridSize;
+                var endX = Math.Min(startX + gridSize, width);
+                var endY = Math.Min(startY + gridSize, height);
+
+                // Count unique colors in this grid cell
+                var colorsInCell = new HashSet<uint>();
+                for (int y = startY; y < endY; y++)
+                {
+                    for (int x = startX; x < endX; x++)
+                    {
+                        colorsInCell.Add(pixels[y * width + x]);
+                    }
+                }
+
+                totalCells++;
+
+                // A consistent cell should have very few colors (ideally 1-2)
+                if (colorsInCell.Count <= Math.Max(1, gridSize / 2))
+                {
+                    consistentCells++;
+                }
+            }
+        }
+
+        return totalCells > 0 ? (double)consistentCells / totalCells : 0.0;
+    }
+
+    /// <summary>
+    /// Apply grid-based majority color filtering
+    /// Each grid cell becomes the most frequent color within that cell
+    /// </summary>
+    private uint[] ApplyGridBasedMajorityColorFilter(uint[] pixels, int width, int height, int gridSize, uint[] palette)
+    {
+        var result = new uint[pixels.Length];
+        var gridWidth = (width + gridSize - 1) / gridSize;
+        var gridHeight = (height + gridSize - 1) / gridSize;
+        var totalCells = gridWidth * gridHeight;
+
+        Console.WriteLine($"[ImageUpscaler] 🎨 Applying {gridSize}x{gridSize} majority color filter to {totalCells:N0} cells");
+
+        var processedCells = 0L;
+
+        // Process grid cells in parallel for maximum performance
+        Parallel.For(0, totalCells, new ParallelOptions { MaxDegreeOfParallelism = _cpuThreadCount }, cellIndex =>
+        {
+            var gridX = cellIndex % gridWidth;
+            var gridY = cellIndex / gridWidth;
+
+            var startX = gridX * gridSize;
+            var startY = gridY * gridSize;
+            var endX = Math.Min(startX + gridSize, width);
+            var endY = Math.Min(startY + gridSize, height);
+
+            // Count color frequencies in this grid cell
+            var colorCounts = new Dictionary<uint, int>();
+            for (int y = startY; y < endY; y++)
+            {
+                for (int x = startX; x < endX; x++)
+                {
+                    var pixel = pixels[y * width + x];
+                    colorCounts[pixel] = colorCounts.GetValueOrDefault(pixel, 0) + 1;
+                }
+            }
+
+            // Find the most frequent color (majority vote)
+            var majorityColor = colorCounts.OrderByDescending(kvp => kvp.Value).First().Key;
+
+            // Map to nearest palette color to maintain authenticity
+            var paletteColor = FindNearestPaletteColor(majorityColor, palette);
+
+            // Apply the majority color to the entire grid cell
+            for (int y = startY; y < endY; y++)
+            {
+                for (int x = startX; x < endX; x++)
+                {
+                    result[y * width + x] = paletteColor;
+                }
+            }
+
+            var processed = Interlocked.Increment(ref processedCells);
+            if (processed % 1000 == 0)
+            {
+                var progress = (processed * 100) / totalCells;
+                if (progress % 10 == 0) // Only log every 10%
+                {
+                    Console.WriteLine($"[ImageUpscaler] 🎨 Majority filtering: {progress}%");
+                }
+            }
+        });
+
+        return result;
+    }
+
+    /// <summary>
+    /// Find the nearest color in the palette using fast distance calculation
+    /// </summary>
+    private uint FindNearestPaletteColor(uint targetColor, uint[] palette)
+    {
+        var targetR = (int)((targetColor >> 16) & 0xFF);
+        var targetG = (int)((targetColor >> 8) & 0xFF);
+        var targetB = (int)(targetColor & 0xFF);
+
+        uint nearestColor = palette[0];
+        var minDistanceSquared = int.MaxValue;
+
+        foreach (var paletteColor in palette)
+        {
+            var paletteR = (int)((paletteColor >> 16) & 0xFF);
+            var paletteG = (int)((paletteColor >> 8) & 0xFF);
+            var paletteB = (int)(paletteColor & 0xFF);
+
+            var dr = paletteR - targetR;
+            var dg = paletteG - targetG;
+            var db = paletteB - targetB;
+            var distanceSquared = dr * dr + dg * dg + db * db;
+
+            if (distanceSquared < minDistanceSquared)
+            {
+                minDistanceSquared = distanceSquared;
+                nearestColor = paletteColor;
+            }
+        }
+
+        return nearestColor;
+    }
+
+    /// <summary>
+    /// INTELLIGENT pixel art post-processing with density detection and majority color filtering
+    /// 1. Analyzes pixel density (1x1, 2x2, 4x4, 8x8) from the upscaled image
+    /// 2. Applies grid-based filtering where each grid cell becomes its most common color
+    /// 3. Uses original palette to maintain authentic pixel art appearance
+    /// </summary>
+    private uint[] ApplyPixelArtPostProcessing(uint[] pixels, int width, int height, uint[] originalPixels, int originalWidth, int originalHeight, int scaleFactor)
+    {
+        var startTime = System.Diagnostics.Stopwatch.GetTimestamp();
+        Console.WriteLine($"[ImageUpscaler] 🎨 INTELLIGENT Pixel Art Mode: Processing {width}x{height} image");
+        Console.WriteLine($"[ImageUpscaler] Original: {originalWidth}x{originalHeight}, Scale: {scaleFactor}x");
+
+        // STEP 1: Extract original palette
+        var paletteExtractionStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var fullPalette = new HashSet<uint>(originalPixels);
+        var paletteArray = ReducePaletteForPixelArt(fullPalette, targetColors: 512);
+        var paletteExtractionTime = (System.Diagnostics.Stopwatch.GetTimestamp() - paletteExtractionStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+
+        Console.WriteLine($"[ImageUpscaler] ⚡ Using {paletteArray.Length} colors from original palette in {paletteExtractionTime * 1000:F1}ms");
+
+        // STEP 2: DETECT pixel art density by analyzing color patterns
+        var densityDetectionStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var detectedDensity = DetectPixelArtDensity(pixels, width, height, scaleFactor);
+        var densityDetectionTime = (System.Diagnostics.Stopwatch.GetTimestamp() - densityDetectionStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+
+        Console.WriteLine($"[ImageUpscaler] 🎨 Detected pixel density: {detectedDensity}x{detectedDensity} in {densityDetectionTime * 1000:F1}ms");
+
+        // STEP 3: Apply grid-based majority color filtering
+        var filteringStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var result = ApplyGridBasedMajorityColorFilter(pixels, width, height, detectedDensity, paletteArray);
+        var filteringTime = (System.Diagnostics.Stopwatch.GetTimestamp() - filteringStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+
+        var totalElapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
+
+        Console.WriteLine($"[ImageUpscaler] 🎨 Grid filtering complete in {filteringTime * 1000:F1}ms");
+        Console.WriteLine($"[ImageUpscaler] ✓ INTELLIGENT pixel art processing complete in {totalElapsed:F2}s!");
+        Console.WriteLine($"[ImageUpscaler] ✓ Used {detectedDensity}x{detectedDensity} grid with majority color voting");
+
+        return result;
+    }
+
 }
 
 public class ProgressInfo
