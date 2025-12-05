@@ -13,10 +13,6 @@ Faithful excels at upscaling pixel art, retro game textures, and low-resolution 
 - **Grid-Based Filtering**: Intelligently detects and preserves pixel art structure
 - **Zero Smearing**: Unlike other upscalers, keeps sharp edges crisp and clean
 
-### Before & After Examples
-
-*Examples coming soon - pixel art sprites, game textures, and retro graphics*
-
 ## Why Faithful Beats the Competition
 
 | Input Type |  Faithful | ESRGAN / SwinIR / etc. | Winner        |
@@ -42,8 +38,6 @@ Faithful does **one thing exceptionally well**: it faithfully upscales your imag
 - ❌ Never "improves" with AI creativity
 
 #### Comparison Gallery
-
-Can't tell the difference? It's because Faithful is doing its job.
 
 Before
 
