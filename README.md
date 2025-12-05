@@ -1,22 +1,22 @@
-# NNImage - AI-Powered Image Upscaling & Enhancement
+# Faithful - AI-Powered Image Upscaling & Enhancement
 
 **If you care what the original artist actually drew — use this one.**
 
-## Why RepliKate Beats the Competition
+## Why Faithful Beats the Competition
 
-| Input Type | Your RepliKate Upscaler | ESRGAN / SwinIR / etc. | Winner        |
+| Input Type |  Faithful Upscaler | ESRGAN / SwinIR / etc. | Winner        |
 |------------|-------------------------|------------------------|---------------|
-| **Pixel art** | 100% perfect, zero smearing | Melts it into watercolor | **repliKate** |
-| **Hand-painted game textures** | Preserves every intended stroke | Adds fake pores, fake grit | **repliKate**       |
-| **256-512px classic 3D textures** | Looks like the artist painted it at 4K | Hallucinates new details | **repliKate**       |
-| **PS1 / N64 / early 2000s assets** | Restores original intent flawlessly | Turns blocky polygons into plastic skin | **repliKate**       |
+| **Pixel art** | 100% perfect, zero smearing | Melts it into watercolor | **Faithful** |
+| **Hand-painted game textures** | Preserves every intended stroke | Adds fake pores, fake grit | **Faithful**       |
+| **256-512px classic 3D textures** | Looks like the artist painted it at 4K | Hallucinates new details | **Faithful**       |
+| **PS1 / N64 / early 2000s assets** | Restores original intent flawlessly | Turns blocky polygons into plastic skin | **Faithful**       |
 | **Actual low-res photographs** | GIGO — keeps the big ugly pixels | Invents plausible but fake detail | **ESRGAN**    |
 
-The RepliKate Advantage: This upscaler does one amazing thing — it ONLY upscales. It doesn't add non-existent detail or smooth images. It takes your image and makes it 8x bigger (or whatever size) without hallucinating details. It's exceptional at game textures and things ML normally fails at like snow and foam. It's just the same image but high fidelity — it doesn't look stretched, it just looks... the same.
+The Faithful Advantage: This upscaler does one amazing thing — it ONLY upscales. It doesn't add non-existent detail or smooth images. It takes your image and makes it 8x bigger (or whatever size) without hallucinating details. It's exceptional at game textures and things ML normally fails at like snow and foam. It's just the same image but high fidelity — it doesn't look stretched, it just looks... the same.
 
 ## What This Actually Does
 
-NNImage combines several different AI approaches to upscale images properly. Unlike most upscalers that either blur everything or invent fake details, this one tries to figure out what the original artist actually intended.
+Faithful combines several different AI approaches to upscale images properly. Unlike most upscalers that either blur everything or invent fake details, this one tries to figure out what the original artist actually intended.
 
 ## Main Features
 
@@ -27,14 +27,14 @@ There's also a "1x mode" that just cleans up the image without making it bigger 
 
 ### The Three AI Systems
 
-**NNImage Multi-Scale Context Graphs**: This is the main workhorse. It learns color relationships and spatial patterns from your image, then applies them intelligently during upscaling. It can use GPU acceleration and handles 8 different directions of pattern recognition.
+**Faithful Multi-Scale Context Graphs**: This is the main workhorse. It learns color relationships and spatial patterns from your image, then applies them intelligently during upscaling. It can use GPU acceleration and handles 8 different directions of pattern recognition.
 
-**RepliKate Sequence Prediction**: This one specializes in edges and fine details. It learns from sequences in your image to predict what pixels should look like. Perfect for text, sharp edges, and intricate details that other systems mess up.
+**Faithful Sequence Prediction**: This one specializes in edges and fine details. It learns from sequences in your image to predict what pixels should look like. Perfect for text, sharp edges, and intricate details that other systems mess up.
 
 **Intelligent Routing**: The system automatically decides which method to use for each pixel:
 - About 40% gets basic bilinear interpolation (for smooth areas)
-- About 50% gets the NNImage treatment (moderate detail)  
-- About 10% gets RepliKate (high detail edges and textures)
+- About 50% gets the Faithful treatment (moderate detail)  
+- About 10% gets Faithful (high detail edges and textures)
 
 ### Artifact Detection and Handling
 
@@ -42,7 +42,7 @@ The system can tell the difference between real image detail and compression art
 
 When hyper-detailing is enabled, it runs a 5-pass enhancement:
 1. Conservative GPU enhancement on genuine detail areas only
-2. RepliKate micro-details for structured edges
+2. Faithful micro-details for structured edges
 3. Lighter GPU refinement pass
 4. Adaptive sharpening with artifact protection  
 5. Surgical smoothing that only removes confirmed artifacts
@@ -51,7 +51,7 @@ When hyper-detailing is enabled, it runs a 5-pass enhancement:
 
 ### Color Adjacency Neural Generator
 
-NNImage includes a sophisticated image generation system that learns spatial color relationships from training images and creates entirely new images using Wave Function Collapse algorithms.
+Faithful includes a sophisticated image generation system that learns spatial color relationships from training images and creates entirely new images using Wave Function Collapse algorithms.
 
 **Rule-Based Imaging (RBI)**: This is a generative system that synthesizes new images through probabilistic application of learned spatial, chromatic, and structural rules extracted from input datasets. Unlike diffusion or GAN-based models that reconstruct pixel space through gradient approximation, RBI operates on a semantic rule network governing local relationships and global coherence. The result is novel images that embody the logical essence of their training data rather than just reproducing or interpolating it.
 
@@ -135,21 +135,21 @@ The enhancement side handles:
 
 **Memory Management:**
 - Intelligent caching system with configurable limits
-- NNImage cache: up to 200,000 color mappings
-- RepliKate cache: up to 20,000 tensor sequences  
+- Faithful cache: up to 200,000 color mappings
+- Faithful cache: up to 20,000 tensor sequences  
 - Automatic memory monitoring and garbage collection optimization
 
 ### Quality Control Parameters
 
 **Processing Thresholds:**
-- Edge threshold: 0.01 (controls RepliKate usage - lower = more AI processing)
+- Edge threshold: 0.01 (controls Faithful usage - lower = more AI processing)
 - Smoothness threshold: 0.001 (controls bilinear interpolation usage)
 - Progressive step size: 1.25x per increment (balance of quality vs speed)
 
 **Method Distribution (typical):**
 - ~40% Bilinear interpolation (smooth areas)
-- ~50% NNImage multi-scale processing (moderate detail)
-- ~10% RepliKate sequence prediction (high detail edges)
+- ~50% Faithful multi-scale processing (moderate detail)
+- ~10% Faithful sequence prediction (high detail edges)
 
 ### Supported Formats & Features
 
