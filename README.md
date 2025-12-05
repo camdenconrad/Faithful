@@ -43,6 +43,8 @@ Faithful does **one thing exceptionally well**: it faithfully upscales your imag
 
 #### Comparison Gallery
 
+Can't tell the difference? It's because Faithful is doing its job.
+
 Before
 
 <img width="240" height="150" alt="khyzha-074460" src="https://github.com/user-attachments/assets/e066d8fc-9fc0-4725-865a-23e99b1ff4e6" />
