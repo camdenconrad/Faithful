@@ -1,40 +1,93 @@
-# Faithful - AI-Powered Image Upscaling & Enhancement
+# Faithful - Pixel Art Upscaling Done Right
 
-**If you care what the original artist actually drew — use this one.**
+**Preserving Every Pixel, Every Color, Every Detail — Exactly As Intended**
+
+When you upscale pixel art, you don't want AI inventing details that were never there. Faithful is built on one core principle: **be faithful to the input image**. No hallucinated details, no invented textures, no AI "creativity" — just your original artwork, beautifully scaled up.
+
+## Perfect for Pixel Art & Game Assets
+
+Faithful excels at upscaling pixel art, retro game textures, and low-resolution artwork where **preserving the original is critical**:
+
+- **100% Faithful Reproduction**: Never adds details that weren't in the original
+- **Palette Preservation**: Maintains exact color palettes from pixel art
+- **Grid-Based Filtering**: Intelligently detects and preserves pixel art structure
+- **Zero Smearing**: Unlike other upscalers, keeps sharp edges crisp and clean
+
+### Before & After Examples
+
+*Examples coming soon - pixel art sprites, game textures, and retro graphics*
 
 ## Why Faithful Beats the Competition
 
-| Input Type |  Faithful Upscaler | ESRGAN / SwinIR / etc. | Winner        |
+| Input Type |  Faithful | ESRGAN / SwinIR / etc. | Winner        |
 |------------|-------------------------|------------------------|---------------|
 | **Pixel art** | 100% perfect, zero smearing | Melts it into watercolor | **Faithful** |
 | **Hand-painted game textures** | Preserves every intended stroke | Adds fake pores, fake grit | **Faithful**       |
 | **256-512px classic 3D textures** | Looks like the artist painted it at 4K | Hallucinates new details | **Faithful**       |
 | **PS1 / N64 / early 2000s assets** | Restores original intent flawlessly | Turns blocky polygons into plastic skin | **Faithful**       |
-| **Actual low-res photographs** | GIGO — keeps the big ugly pixels | Invents plausible but fake detail | **ESRGAN**    |
+| **Sprites & icons** | Crisp edges, perfect colors | Blurry mess with color bleed | **Faithful**       |
+| **Actual low-res photographs** | Faithful to source (no fake detail) | Invents plausible but fake detail | **ESRGAN**    |
 
-The Faithful Advantage: This upscaler does one amazing thing — it ONLY upscales. It doesn't add non-existent detail or smooth images. It takes your image and makes it 8x bigger (or whatever size) without hallucinating details. It's exceptional at game textures and things ML normally fails at like snow and foam. It's just the same image but high fidelity — it doesn't look stretched, it just looks... the same.
+### The Faithfulness Philosophy
+
+Faithful does **one thing exceptionally well**: it faithfully upscales your image without adding details that weren't there.
+
+**What "Faithful" Means:**
+- ✅ Preserves exact color palettes from the original
+- ✅ Maintains pixel grid structure in pixel art
+- ✅ Keeps edges sharp and clean, never blurred
+- ✅ Respects the artist's original intent
+- ❌ Never invents textures or details
+- ❌ Never hallucinates features
+- ❌ Never "improves" with AI creativity
+
+#### Comparison Gallery
 
 ## What This Actually Does
 
-Faithful combines several different AI approaches to upscale images properly. Unlike most upscalers that either blur everything or invent fake details, this one tries to figure out what the original artist actually intended.
+Faithful combines several different AI approaches to upscale images with absolute faithfulness to the original. Unlike most upscalers that either blur everything or invent fake details, this one analyzes what the original artist actually created and scales it up without adding or removing anything.
 
 ## Main Features
+
+### Pixel Art Mode - The Star Feature
+
+Faithful includes a dedicated **Pixel Art Mode** specifically designed for upscaling retro game graphics, sprites, and low-resolution artwork. Unlike generic upscalers that blur or hallucinate details, Pixel Art Mode is **obsessively faithful** to your original image.
+
+**Key Features:**
+- **Intelligent Density Detection**: Automatically analyzes your original image to detect pixel grid size (1x1, 2x2, 4x4, 8x8)
+- **Grid-Based Majority Filtering**: Each detected grid cell becomes its most common color, eliminating AI-induced blur
+- **Original Palette Enforcement**: Only uses colors from your source image — no color invention
+- **Nearest-Neighbor Pre-Scaling**: Small images get crisp pre-scaling before AI refinement
+- **Reduced Sharpening**: Gentle enhancement preserves clean pixel art aesthetic
+
+#### Pixel Art Mode Results
+
+<!-- Add pixel art comparison image here: Original | Other AI | Faithful -->
+
+**How It Works:**
+1. Extracts exact color palette from original image (typically 16-256 colors)
+2. Analyzes original to detect pixel density (NOT the blurry upscaled version)
+3. Applies intelligent grid-based filtering at detected density scale
+4. Ensures every output pixel uses only original palette colors
+5. Result: Perfectly faithful upscale that looks hand-painted at higher resolution
 
 ### Progressive Upscaling
 Instead of jumping straight from 1x to 4x (which usually looks terrible), this does multiple smaller steps: 1x → 1.25x → 1.5x → 2x → 4x. Each step builds on the last one.
 
 There's also a "1x mode" that just cleans up the image without making it bigger - great for fixing compression artifacts and general cleanup.
 
-### The Three AI Systems
+### The Three AI Systems (All Trained on YOUR Image)
 
-**Faithful Multi-Scale Context Graphs**: This is the main workhorse. It learns color relationships and spatial patterns from your image, then applies them intelligently during upscaling. It can use GPU acceleration and handles 8 different directions of pattern recognition.
+**Multi-Scale Context Graphs**: This is the main workhorse. It learns color relationships and spatial patterns **exclusively from your input image**, then applies them intelligently during upscaling. No pre-trained models, no generic datasets — it only knows what you show it. GPU-accelerated and analyzes 8 different directions of pattern recognition.
 
-**Faithful Sequence Prediction**: This one specializes in edges and fine details. It learns from sequences in your image to predict what pixels should look like. Perfect for text, sharp edges, and intricate details that other systems mess up.
+**Sequence Prediction (RepliKate)**: This one specializes in edges and fine details by learning from **your image's own sequences**. It studies horizontal, vertical, and diagonal patterns in your artwork to predict how pixels should look. Perfect for text, sharp edges, and intricate details that other systems mess up. Learns **only** from your input.
 
 **Intelligent Routing**: The system automatically decides which method to use for each pixel:
 - About 40% gets basic bilinear interpolation (for smooth areas)
-- About 50% gets the Faithful treatment (moderate detail)  
-- About 10% gets Faithful (high detail edges and textures)
+- About 50% gets Multi-Scale Context processing (moderate detail)  
+- About 10% gets RepliKate sequence prediction (high detail edges and textures)
+
+**Why This Matters:** Because the AI trains **only on your image**, it can never invent details or hallucinate features. It can only reproduce patterns it learned from your original artwork.
 
 ### Artifact Detection and Handling
 
@@ -149,7 +202,7 @@ The enhancement side handles:
 **Method Distribution (typical):**
 - ~40% Bilinear interpolation (smooth areas)
 - ~50% Faithful multi-scale processing (moderate detail)
-- ~10% Faithful sequence prediction (high detail edges)
+- ~10% Faithful (repliKate) sequence prediction (high detail edges)
 
 ### Supported Formats & Features
 
@@ -172,20 +225,8 @@ The enhancement side handles:
 - Genuine detail preservation vs compression artifact removal
 
 ### System Requirements
-
-**Minimum:**
-- .NET 9.0 runtime
-- 4GB RAM (8GB+ recommended for large images)
-- Multi-core CPU (4+ cores recommended)
-
-**Recommended:**
-- 16GB+ RAM for processing large images
-- NVIDIA GPU with CUDA support (GTX 1060 or better)
-- NVMe SSD for faster image I/O
-- 8+ CPU cores for maximum parallel processing efficiency
-
 **Optimal Performance:**
 - High-core-count CPU (12+ cores) 
-- Modern NVIDIA GPU (RTX series recommended)
-- 32GB+ RAM for batch processing
+- Modern NVIDIA GPU (RTX 40xx series recommended)
+- 4GB RAM
 - Fast storage (NVMe SSD) for large image files
