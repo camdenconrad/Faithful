@@ -333,6 +333,42 @@ public class ImageUpscaler
             return CleanupOnly(inputPixels, inputWidth, inputHeight);
         }
 
+        // CRITICAL FIX: Pre-scale small images using traditional methods first
+        // Small images (<256px) need to be enlarged with traditional scaling before AI upscaling
+        var minDimension = Math.Min(inputWidth, inputHeight);
+        const int SMALL_IMAGE_THRESHOLD = 1024;
+
+        if (minDimension < SMALL_IMAGE_THRESHOLD)
+        {
+            // Calculate how much we need to pre-scale
+            var preScaleFactor = (int)Math.Ceiling((double)SMALL_IMAGE_THRESHOLD / minDimension);
+            preScaleFactor = Math.Min(preScaleFactor, targetScaleFactor); // Don't over-scale
+
+            if (preScaleFactor > 1)
+            {
+                Console.WriteLine($"[ImageUpscaler] ⚠ SMALL IMAGE DETECTED ({inputWidth}x{inputHeight})");
+                Console.WriteLine($"[ImageUpscaler] ⚡ Pre-scaling {preScaleFactor}x using {(pixelArtMode ? "NEAREST-NEIGHBOR" : "LANCZOS")} for better quality");
+
+                // Use nearest-neighbor for pixel art (sharp edges), Lanczos for photos (smooth)
+                var (preScaledPixels, preScaledWidth, preScaledHeight) = pixelArtMode 
+                    ? ScaleNearestNeighbor(inputPixels, inputWidth, inputHeight, preScaleFactor)
+                    : ScaleLanczos(inputPixels, inputWidth, inputHeight, preScaleFactor);
+
+                Console.WriteLine($"[ImageUpscaler] ✓ Pre-scaled to {preScaledWidth}x{preScaledHeight}");
+
+                // Update input for AI upscaling
+                inputPixels = preScaledPixels;
+                inputWidth = preScaledWidth;
+                inputHeight = preScaledHeight;
+
+                // Adjust target scale factor
+                targetScaleFactor = targetScaleFactor / preScaleFactor;
+                if (targetScaleFactor < 1) targetScaleFactor = 1;
+
+                Console.WriteLine($"[ImageUpscaler] ⚡ Remaining AI upscaling: {targetScaleFactor}x");
+            }
+        }
+
         if (!_useProgressiveUpscaling || targetScaleFactor <= 1.5f)
         {
             // Single-pass for small scales
@@ -1773,6 +1809,107 @@ public class ImageUpscaler
         return $"{hours}h {mins}m";
     }
 
+    /// <summary>
+    /// Nearest-neighbor scaling for pixel art (preserves sharp edges)
+    /// </summary>
+    private (uint[] pixels, int width, int height) ScaleNearestNeighbor(uint[] inputPixels, int inputWidth, int inputHeight, int scaleFactor)
+    {
+        var outputWidth = inputWidth * scaleFactor;
+        var outputHeight = inputHeight * scaleFactor;
+        var outputPixels = new uint[outputWidth * outputHeight];
+
+        Console.WriteLine($"[ImageUpscaler] ⚡ Nearest-neighbor scaling: {inputWidth}x{inputHeight} → {outputWidth}x{outputHeight}");
+
+        Parallel.For(0, outputHeight, _parallelOptions, y =>
+        {
+            var srcY = y / scaleFactor;
+            for (int x = 0; x < outputWidth; x++)
+            {
+                var srcX = x / scaleFactor;
+                outputPixels[y * outputWidth + x] = inputPixels[srcY * inputWidth + srcX];
+            }
+        });
+
+        return (outputPixels, outputWidth, outputHeight);
+    }
+
+    /// <summary>
+    /// Lanczos3 scaling for photos (smooth, high-quality interpolation)
+    /// </summary>
+    private (uint[] pixels, int width, int height) ScaleLanczos(uint[] inputPixels, int inputWidth, int inputHeight, int scaleFactor)
+    {
+        var outputWidth = inputWidth * scaleFactor;
+        var outputHeight = inputHeight * scaleFactor;
+        var outputPixels = new uint[outputWidth * outputHeight];
+
+        Console.WriteLine($"[ImageUpscaler] ⚡ Lanczos3 scaling: {inputWidth}x{inputHeight} → {outputWidth}x{outputHeight}");
+
+        const int LANCZOS_A = 3; // Lanczos kernel size
+
+        Parallel.For(0, outputHeight, _parallelOptions, y =>
+        {
+            for (int x = 0; x < outputWidth; x++)
+            {
+                var srcX = (x + 0.5) / scaleFactor - 0.5;
+                var srcY = (y + 0.5) / scaleFactor - 0.5;
+
+                var sumR = 0.0;
+                var sumG = 0.0;
+                var sumB = 0.0;
+                var sumWeight = 0.0;
+
+                var x0 = (int)Math.Floor(srcX);
+                var y0 = (int)Math.Floor(srcY);
+
+                for (int ky = -LANCZOS_A + 1; ky <= LANCZOS_A; ky++)
+                {
+                    for (int kx = -LANCZOS_A + 1; kx <= LANCZOS_A; kx++)
+                    {
+                        var px = Math.Clamp(x0 + kx, 0, inputWidth - 1);
+                        var py = Math.Clamp(y0 + ky, 0, inputHeight - 1);
+
+                        var dx = srcX - (x0 + kx);
+                        var dy = srcY - (y0 + ky);
+
+                        var weight = LanczosKernel(dx, LANCZOS_A) * LanczosKernel(dy, LANCZOS_A);
+
+                        var pixel = inputPixels[py * inputWidth + px];
+                        sumR += ((pixel >> 16) & 0xFF) * weight;
+                        sumG += ((pixel >> 8) & 0xFF) * weight;
+                        sumB += (pixel & 0xFF) * weight;
+                        sumWeight += weight;
+                    }
+                }
+
+                if (sumWeight > 0)
+                {
+                    var r = (byte)Math.Clamp(sumR / sumWeight, 0, 255);
+                    var g = (byte)Math.Clamp(sumG / sumWeight, 0, 255);
+                    var b = (byte)Math.Clamp(sumB / sumWeight, 0, 255);
+                    outputPixels[y * outputWidth + x] = 0xFF000000u | ((uint)r << 16) | ((uint)g << 8) | b;
+                }
+                else
+                {
+                    outputPixels[y * outputWidth + x] = inputPixels[y0 * inputWidth + x0];
+                }
+            }
+        });
+
+        return (outputPixels, outputWidth, outputHeight);
+    }
+
+    /// <summary>
+    /// Lanczos windowed sinc kernel
+    /// </summary>
+    private double LanczosKernel(double x, int a)
+    {
+        if (x == 0) return 1.0;
+        if (Math.Abs(x) >= a) return 0.0;
+
+        var px = Math.PI * x;
+        return a * Math.Sin(px) * Math.Sin(px / a) / (px * px);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // HYPER-DETAILING METHODS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -3180,7 +3317,8 @@ public class ImageUpscaler
 
     /// <summary>
     /// INTELLIGENT pixel art post-processing with density detection and majority color filtering
-    /// 1. Analyzes pixel density (1x1, 2x2, 4x4, 8x8) from the upscaled image
+    /// FIXED: Analyzes ORIGINAL image for density, not the blurry upscaled result
+    /// 1. Analyzes pixel density (1x1, 2x2, 4x4, 8x8) from the ORIGINAL image
     /// 2. Applies grid-based filtering where each grid cell becomes its most common color
     /// 3. Uses original palette to maintain authentic pixel art appearance
     /// </summary>
@@ -3198,23 +3336,30 @@ public class ImageUpscaler
 
         Console.WriteLine($"[ImageUpscaler] ⚡ Using {paletteArray.Length} colors from original palette in {paletteExtractionTime * 1000:F1}ms");
 
-        // STEP 2: DETECT pixel art density by analyzing color patterns
+        // STEP 2: CRITICAL FIX - Detect pixel art density from ORIGINAL image, not blurry upscaled version!
         var densityDetectionStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var detectedDensity = DetectPixelArtDensity(pixels, width, height, scaleFactor);
+        Console.WriteLine($"[ImageUpscaler] 🎨 Analyzing ORIGINAL image for pixel density (not the blurry upscaled version)");
+        var detectedDensity = DetectPixelArtDensity(originalPixels, originalWidth, originalHeight, 1);
         var densityDetectionTime = (System.Diagnostics.Stopwatch.GetTimestamp() - densityDetectionStart) / (double)System.Diagnostics.Stopwatch.Frequency;
 
         Console.WriteLine($"[ImageUpscaler] 🎨 Detected pixel density: {detectedDensity}x{detectedDensity} in {densityDetectionTime * 1000:F1}ms");
 
-        // STEP 3: Apply grid-based majority color filtering
+        // Scale the detected density to match the upscaled image
+        var scaledDensity = detectedDensity * scaleFactor;
+        if (scaledDensity < 1) scaledDensity = scaleFactor; // Fallback to scale factor
+
+        Console.WriteLine($"[ImageUpscaler] 🎨 Scaled grid size for upscaled image: {scaledDensity}x{scaledDensity}");
+
+        // STEP 3: Apply grid-based majority color filtering with scaled density
         var filteringStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var result = ApplyGridBasedMajorityColorFilter(pixels, width, height, detectedDensity, paletteArray);
+        var result = ApplyGridBasedMajorityColorFilter(pixels, width, height, scaledDensity, paletteArray);
         var filteringTime = (System.Diagnostics.Stopwatch.GetTimestamp() - filteringStart) / (double)System.Diagnostics.Stopwatch.Frequency;
 
         var totalElapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - startTime) / (double)System.Diagnostics.Stopwatch.Frequency;
 
         Console.WriteLine($"[ImageUpscaler] 🎨 Grid filtering complete in {filteringTime * 1000:F1}ms");
         Console.WriteLine($"[ImageUpscaler] ✓ INTELLIGENT pixel art processing complete in {totalElapsed:F2}s!");
-        Console.WriteLine($"[ImageUpscaler] ✓ Used {detectedDensity}x{detectedDensity} grid with majority color voting");
+        Console.WriteLine($"[ImageUpscaler] ✓ Used {scaledDensity}x{scaledDensity} grid with majority color voting");
 
         return result;
     }
